@@ -3,13 +3,19 @@ pandas==2.2.0
 openpyxl==3.1.2
 Pillow==10.2.0
 
+# OCR + PDF page rendering
 pytesseract==0.3.10
 pdf2image==1.17.0
+
+# Tables from images/PDF
 img2table==1.2.11
 
+# Text-based PDF reading (fast path when not scanned)
 pdfplumber==0.11.0
 pypdf==4.0.2
 
+# PDF -> Word
 pdf2docx==0.5.8
+
+# PDF -> PPT (we generate PPT from extracted text)
 python-pptx==0.6.23
-reportlab==4.0.9
