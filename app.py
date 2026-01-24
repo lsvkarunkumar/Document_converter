@@ -1,40 +1,8 @@
-# app.py — FULL REPLACEMENT (Streamlit Cloud / Web-only / pip-only)
-# DocFlow Converter — Smallpdf-ish UI + Cloud-safe backend
-#
-# ✅ No system binaries (NO poppler / tesseract / ghostscript / qpdf)
-# ✅ Uses: PyMuPDF (fitz) for PDF render, pdfplumber for text tables, EasyOCR + OpenCV for OCR & table extraction
-# ✅ Supports:
-#   - Image table -> Excel/CSV/JSON (ZIP)
-#   - Image-PDF (scanned PDF) table -> Excel/CSV/JSON (ZIP)
-#   - PDF -> editable Word (best fidelity without LibreOffice) via pdf2docx for text-based PDFs
-#   - Hybrid PDF text extract (text-layer + OCR fallback)
-#   - Pages -> PNG ZIP
-#   - Searchable PDF (OCR layer) — implemented via PDF overlay (reportlab) (no ocrmypdf)
-#
-# -------------------------------
-# requirements.txt (RECOMMENDED)
-# -------------------------------
-# streamlit
-# pandas
-# numpy
-# pillow
-# pymupdf
-# pdfplumber
-# pdf2docx
-# python-docx
-# openpyxl
-# reportlab
-# python-pptx
-# opencv-python-headless
-# easyocr
-# pypdf
-
 import os
 import re
 import io
 import json
 import zipfile
-import tempfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -43,21 +11,26 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 
+
 # ============================================================
-# Page config + "Smallpdf-ish" clean UI
+# Page config + One-page (no main scroll) UI
 # ============================================================
 st.set_page_config(page_title="DocFlow Converter", layout="wide")
 
 st.markdown(
     """
     <style>
-      .block-container { max-width: 1220px; padding-top: 1.0rem; padding-bottom: 2rem; }
+      /* ---------- Page sizing: force "single page" feel ---------- */
+      html, body, [class*="stApp"] { height: 100%; overflow: hidden; }
+      .block-container { max-width: 1220px; padding-top: 0.8rem; padding-bottom: 0.8rem; height: calc(100vh - 1.2rem); overflow: hidden; }
 
+      /* ---------- Header ---------- */
       .topbar {
         display:flex; align-items:center; justify-content:space-between;
         padding: 12px 14px; border-radius: 14px;
         border: 1px solid rgba(0,0,0,0.08);
         background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.86));
+        margin-bottom: 10px;
       }
       .brand { font-size: 18px; font-weight: 850; letter-spacing: .2px; }
       .sub { color: rgba(0,0,0,0.62); font-size: 13px; margin-top: 2px; }
@@ -66,14 +39,19 @@ st.markdown(
         border: 1px solid rgba(0,0,0,0.10);
         background: rgba(255,255,255,0.92);
       }
+
+      /* ---------- Cards ---------- */
       .card {
         border: 1px solid rgba(0,0,0,0.08);
         border-radius: 14px;
         padding: 14px 14px;
         background: rgba(255,255,255,0.92);
+        height: calc(100vh - 120px); /* header + padding */
+        overflow: hidden;
       }
+
       .muted { color: rgba(0,0,0,0.62); font-size: 13px; }
-      .divider { height: 1px; background: rgba(0,0,0,0.08); margin: 14px 0; }
+      .divider { height: 1px; background: rgba(0,0,0,0.08); margin: 12px 0; }
 
       .step {
         display: inline-flex; align-items: center; gap: 8px;
@@ -95,10 +73,42 @@ st.markdown(
         margin-right: 6px;
       }
 
-      .disabled {
-        opacity: 0.45;
-        filter: grayscale(0.2);
+      /* ---------- Internal scroll areas (not whole page) ---------- */
+      .panel-scroll {
+        height: calc(100% - 88px); /* room for title + controls */
+        overflow: auto;
+        padding-right: 6px;
       }
+
+      /* ---------- Faded static format buttons ---------- */
+      .formatbar { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; margin-bottom:10px; }
+      .fmt {
+        display:inline-flex; align-items:center; gap:8px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.10);
+        background: rgba(0,0,0,0.03);
+        font-size: 12px;
+        opacity: 0.42;
+        user-select:none;
+      }
+      .fmt b { opacity: 0.9; }
+
+      /* ---------- Sidebar history box (scroll after 4) ---------- */
+      .histbox {
+        border: 1px solid rgba(0,0,0,0.08);
+        border-radius: 12px;
+        padding: 10px 10px;
+        background: rgba(255,255,255,0.9);
+        max-height: 170px; /* ~4 items */
+        overflow: auto;
+      }
+      .histitem { font-size: 12px; color: rgba(0,0,0,0.7); margin-bottom: 8px; }
+      .histmeta { color: rgba(0,0,0,0.5); font-size: 11px; }
+
+      /* Reduce whitespace */
+      div[data-testid="stVerticalBlock"] > div { padding-top: 0.2rem; padding-bottom: 0.2rem; }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -111,13 +121,11 @@ st.markdown(
         <div class="brand">DocFlow Converter</div>
         <div class="sub">Upload → Choose → Convert → Download</div>
       </div>
-      <div class="tag">Web-only • Streamlit</div>
+      <div class="tag">Web-only • Streamlit Cloud</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
-st.write("")
 
 
 # ============================================================
@@ -175,25 +183,20 @@ def mime_for(name: str) -> str:
         return "text/plain"
     if lname.endswith(".png"):
         return "image/png"
-    if lname.endswith(".html"):
-        return "text/html"
-    if lname.endswith(".md"):
-        return "text/markdown"
     return "application/octet-stream"
 
 
 # ============================================================
-# OCR / PDF helpers (WEB-ONLY)
+# OCR / PDF helpers (pip-only)
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def _easyocr_reader(lang_code: str):
     import easyocr
-    # You can expand languages later; keep it stable for cloud
     return easyocr.Reader([lang_code], gpu=False)
 
 
 def _ui_lang_to_easyocr(ui_lang: str) -> str:
-    # UI shows "eng" to match your old code; EasyOCR uses "en"
+    # UI shows "eng"; EasyOCR uses "en"
     return "en" if ui_lang == "eng" else "en"
 
 
@@ -207,48 +210,43 @@ def pdf_textlayer_extract(pdf_bytes: bytes, max_pages: int) -> List[str]:
 
 
 def pdf_render_pages_to_images(pdf_bytes: bytes, dpi: int, max_pages: int) -> List[Image.Image]:
-    import fitz  # PyMuPDF
+    import fitz
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images: List[Image.Image] = []
+    imgs: List[Image.Image] = []
     for i in range(min(max_pages, doc.page_count)):
-        page = doc.load_page(i)
-        pix = page.get_pixmap(dpi=int(dpi))
-        images.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
+        pix = doc.load_page(i).get_pixmap(dpi=int(dpi))
+        imgs.append(Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB"))
     doc.close()
-    return images
+    return imgs
 
 
-def ocr_image فهم_to_text(pil_img: Image.Image, lang_ui: str = "eng") -> str:
-    # NOTE: function name uses safe ASCII? keep it normal:
+def ocr_image_to_text(pil_img: Image.Image, lang_ui: str = "eng") -> str:
     reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
     arr = np.array(pil_img.convert("RGB"))
-    # detail=0 returns list[str]; paragraph=True helps merge
     try:
         lines = reader.readtext(arr, detail=0, paragraph=True)
     except TypeError:
         lines = reader.readtext(arr, detail=0)
-    txt = "\n".join([t.strip() for t in lines if t and str(t).strip()]).strip()
-    return txt
+    return "\n".join([t.strip() for t in lines if t and str(t).strip()]).strip()
 
 
 def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, lang: str, dpi: int) -> List[str]:
-    layer_texts = pdf_textlayer_extract(pdf_bytes, max_pages=max_pages)
-
+    layer = pdf_textlayer_extract(pdf_bytes, max_pages=max_pages)
     needs_ocr = []
-    for t in layer_texts:
+    for t in layer:
         t2 = re.sub(r"\s+", "", t or "")
         needs_ocr.append(len(t2) < 40)
 
     if not any(needs_ocr):
-        return layer_texts
+        return layer
 
-    images = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
+    imgs = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
     out = []
-    for i, base_text in enumerate(layer_texts):
-        if i < len(images) and needs_ocr[i]:
+    for i, base_text in enumerate(layer):
+        if i < len(imgs) and needs_ocr[i]:
             try:
-                ocr_t = ocr_image_to_text(images[i], lang_ui=lang)
-                out.append(ocr_t if ocr_t else base_text)
+                t = ocr_image_to_text(imgs[i], lang_ui=lang)
+                out.append(t if t else base_text)
             except Exception:
                 out.append(base_text)
         else:
@@ -257,13 +255,13 @@ def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, lang: str, dpi: in
 
 
 def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple[bytes, int]:
-    images = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
+    imgs = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
     files = {}
-    for i, im in enumerate(images, start=1):
+    for i, im in enumerate(imgs, start=1):
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         files[f"pages/page_{i:03d}.png"] = buf.getvalue()
-    return build_zip(files), len(images)
+    return build_zip(files), len(imgs)
 
 
 def pdf_metadata_to_json(pdf_bytes: bytes) -> bytes:
@@ -277,90 +275,7 @@ def pdf_metadata_to_json(pdf_bytes: bytes) -> bytes:
 
 
 # ============================================================
-# Searchable PDF (OCR layer) — WEB-ONLY implementation
-#   We render pages/images, OCR boxes, and overlay invisible text on top of the image.
-# ============================================================
-def _ocr_boxes(pil_img: Image.Image, lang_ui: str, min_conf: float) -> List[Tuple[List[Tuple[float, float]], str, float]]:
-    """
-    Returns list of (box_points, text, conf) where box_points is 4 points in image pixel coords.
-    """
-    reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
-    arr = np.array(pil_img.convert("RGB"))
-    results = reader.readtext(arr, detail=1)
-    out = []
-    for item in results:
-        if not item or len(item) < 3:
-            continue
-        box, text, conf = item[0], item[1], float(item[2])
-        if conf >= min_conf and text and str(text).strip():
-            out.append((box, str(text).strip(), conf))
-    return out
-
-
-def _make_searchable_pdf_from_images(images: List[Image.Image], lang_ui: str, conf01: float) -> bytes:
-    # reportlab: draw image + overlay very low alpha text to create selectable layer
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.utils import ImageReader
-    from reportlab.lib.colors import Color
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf)
-
-    invisible = Color(0, 0, 0, alpha=0.01)
-
-    for page_img in images:
-        w_px, h_px = page_img.size
-        # use 1px = 1pt mapping for simplicity
-        c.setPageSize((w_px, h_px))
-        c.drawImage(ImageReader(page_img), 0, 0, width=w_px, height=h_px, mask='auto')
-
-        boxes = _ocr_boxes(page_img, lang_ui=lang_ui, min_conf=conf01)
-
-        c.setFillColor(invisible)
-        for box, text, _conf in boxes:
-            # box: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] in image coords (origin top-left)
-            xs = [p[0] for p in box]
-            ys = [p[1] for p in box]
-            x_min, x_max = float(min(xs)), float(max(xs))
-            y_min, y_max = float(min(ys)), float(max(ys))
-
-            # Convert image top-left origin to PDF bottom-left origin
-            # Place baseline near bottom of the box
-            pdf_x = x_min
-            pdf_y = h_px - y_max
-
-            box_h = max(6.0, (y_max - y_min))
-            font_size = max(6.0, min(36.0, box_h * 0.8))
-
-            try:
-                c.setFont("Helvetica", font_size)
-            except Exception:
-                c.setFont("Helvetica", 10)
-
-            # clip text to avoid crazy long lines: keep it safe
-            safe_text = re.sub(r"\s+", " ", text)[:200]
-
-            # drawString is enough for selectable layer (not perfect layout but searchable)
-            c.drawString(pdf_x, pdf_y, safe_text)
-
-        c.showPage()
-
-    c.save()
-    return buf.getvalue()
-
-
-def make_searchable_pdf_from_pdf(pdf_bytes: bytes, lang: str, dpi: int, max_pages: int, conf01: float) -> bytes:
-    imgs = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
-    return _make_searchable_pdf_from_images(imgs, lang_ui=lang, conf01=conf01)
-
-
-def make_searchable_pdf_from_image(img_bytes: bytes, lang: str, conf01: float) -> bytes:
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    return _make_searchable_pdf_from_images([img], lang_ui=lang, conf01=conf01)
-
-
-# ============================================================
-# Tables extraction (text-layer first + OCR fallback) — WEB-ONLY
+# Tables extraction (text-layer first + OCR fallback)
 # ============================================================
 def normalize_cell_text_clean(val):
     if val is None:
@@ -370,17 +285,7 @@ def normalize_cell_text_clean(val):
     s = s.replace("\u00a0", " ")
     s = re.sub(r"[ \t]+", " ", s).strip()
     s = re.sub(r"^\|\s*", "", s)
-
-    def join_spaced_letters(m):
-        return m.group(0).replace(" ", "")
-
-    s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
-    s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
-    for _ in range(2):
-        s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
-
     s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
-    s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
     return s
 
 
@@ -395,7 +300,6 @@ def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int) -> List[pd.Da
             for t in tbls:
                 if t:
                     df = pd.DataFrame(t)
-                    # drop empty rows/cols
                     df = df.replace("", np.nan).dropna(axis=0, how="all").dropna(axis=1, how="all").fillna("")
                     if not df.empty:
                         dfs.append(df)
@@ -411,7 +315,6 @@ def df_to_json_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
             name = f"col_{i+1}"
         cols.append(name)
     df2.columns = cols
-
     df2 = df2.where(pd.notnull(df2), None)
     return df2.to_dict(orient="records")
 
@@ -422,7 +325,6 @@ def build_tables_bundle(tables: List[pd.DataFrame], base: str) -> Dict[str, byte
     cleaned = [df.applymap(normalize_cell_text_clean) for df in tables]
     files: Dict[str, bytes] = {}
 
-    # Excel (multi-sheet)
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         for i, df in enumerate(cleaned, start=1):
@@ -446,27 +348,36 @@ def build_tables_bundle(tables: List[pd.DataFrame], base: str) -> Dict[str, byte
     return files
 
 
-# -------------------------
-# OCR Table extraction (image/scanned PDF) — bordered + borderless
-# -------------------------
-def _pil_to_bgr(img: Image.Image) -> np.ndarray:
+# ============================================================
+# OCR Table extraction (Image / Scanned PDF pages)
+# ============================================================
+def extract_table_from_image_webonly(
+    img: Image.Image,
+    lang_ui: str,
+    min_conf_0_100: int,
+    table_mode: str,
+    enhance: bool,
+    deskew: bool
+) -> Tuple[List[pd.DataFrame], str]:
+    """
+    bordered: detect grid-ish cell boxes + OCR per cell
+    borderless: OCR whole image -> split into columns by multi-space (best-effort)
+    """
     import cv2
+
+    conf01 = max(0.10, min(0.95, float(min_conf_0_100) / 100.0))
+    reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
+
     rgb = np.array(img.convert("RGB"))
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-
-def _preprocess_table(img_bgr: np.ndarray, enhance: bool, deskew: bool) -> np.ndarray:
-    import cv2
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
     if enhance:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    bw = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 10
-    )
+    bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 10)
 
     if deskew:
         coords = np.column_stack(np.where(bw > 0))
@@ -480,168 +391,144 @@ def _preprocess_table(img_bgr: np.ndarray, enhance: bool, deskew: bool) -> np.nd
             M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
             bw = cv2.warpAffine(bw, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
-    return bw
-
-
-def _find_cell_boxes_bordered(bw: np.ndarray) -> List[Tuple[int, int, int, int]]:
-    import cv2
-    h, w = bw.shape[:2]
-    hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 30), 1))
-    ver_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, h // 30)))
-
-    horizontal = cv2.erode(bw, hor_kernel, iterations=1)
-    horizontal = cv2.dilate(horizontal, hor_kernel, iterations=2)
-
-    vertical = cv2.erode(bw, ver_kernel, iterations=1)
-    vertical = cv2.dilate(vertical, ver_kernel, iterations=2)
-
-    grid = cv2.addWeighted(horizontal, 0.5, vertical, 0.5, 0.0)
-    grid = cv2.dilate(grid, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
-
-    contours, _ = cv2.findContours(grid, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes = []
-    for c in contours:
-        x, y, ww, hh = cv2.boundingRect(c)
-        if ww < 35 or hh < 18:
-            continue
-        if ww > w * 0.98 and hh > h * 0.98:
-            continue
-        area = ww * hh
-        if area > (w * h) * 0.6:
-            continue
-        boxes.append((x, y, ww, hh))
-
-    boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
-    return boxes
-
-
-def _cluster_positions(vals: List[float], gap: float) -> List[int]:
-    # Simple clustering: assign increasing cluster id when gaps exceed threshold
-    order = np.argsort(vals)
-    cid = np.zeros(len(vals), dtype=int)
-    cur = 0
-    prev = None
-    for idx in order:
-        v = vals[idx]
-        if prev is None:
-            cid[idx] = cur
-            prev = v
-            continue
-        if abs(v - prev) > gap:
-            cur += 1
-        cid[idx] = cur
-        prev = v
-    return cid.tolist()
-
-
-def _boxes_to_grid_df(boxes: List[Tuple[int, int, int, int]], texts: List[str]) -> pd.DataFrame:
-    if not boxes:
-        return pd.DataFrame()
-
-    centers = np.array([(x + w / 2, y + h / 2) for (x, y, w, h) in boxes], dtype=float)
-    xs = centers[:, 0].tolist()
-    ys = centers[:, 1].tolist()
-
-    row_ids = _cluster_positions(ys, gap=18.0)
-    col_ids = _cluster_positions(xs, gap=28.0)
-
-    n_rows = max(row_ids) + 1
-    n_cols = max(col_ids) + 1
-
-    grid = [["" for _ in range(n_cols)] for _ in range(n_rows)]
-    for i, t in enumerate(texts):
-        r = row_ids[i]
-        c = col_ids[i]
-        if grid[r][c]:
-            grid[r][c] = (grid[r][c] + " " + t).strip()
-        else:
-            grid[r][c] = t
-
-    df = pd.DataFrame(grid)
-    df = df.replace("", np.nan).dropna(axis=0, how="all").dropna(axis=1, how="all").fillna("")
-    return df
-
-
-def extract_table_from_image_webonly(
-    img: Image.Image,
-    lang_ui: str,
-    min_conf_0_100: int,
-    table_mode: str,
-    enhance: bool,
-    deskew: bool
-) -> Tuple[List[pd.DataFrame], str]:
-    """
-    Returns list of tables (usually 1), and log string.
-    Bordered mode: detect cell boxes using morphology + OCR per cell.
-    Borderless mode: OCR whole image and split lines by multi-spaces (best-effort).
-    """
-    import cv2
-
-    conf01 = max(0.10, min(0.95, float(min_conf_0_100) / 100.0))
-
-    reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
-    img_bgr = _pil_to_bgr(img)
-    bw = _preprocess_table(img_bgr, enhance=enhance, deskew=deskew)
-
     if table_mode == "bordered":
-        boxes = _find_cell_boxes_bordered(bw)
+        h, w = bw.shape[:2]
+        hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 30), 1))
+        ver_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, h // 30)))
+
+        horizontal = cv2.erode(bw, hor_kernel, iterations=1)
+        horizontal = cv2.dilate(horizontal, hor_kernel, iterations=2)
+
+        vertical = cv2.erode(bw, ver_kernel, iterations=1)
+        vertical = cv2.dilate(vertical, ver_kernel, iterations=2)
+
+        grid = cv2.addWeighted(horizontal, 0.5, vertical, 0.5, 0.0)
+        grid = cv2.dilate(grid, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+
+        contours, _ = cv2.findContours(grid, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        boxes = []
+        for c in contours:
+            x, y, ww, hh = cv2.boundingRect(c)
+            if ww < 35 or hh < 18:
+                continue
+            if ww > w * 0.98 and hh > h * 0.98:
+                continue
+            area = ww * hh
+            if area > (w * h) * 0.6:
+                continue
+            boxes.append((x, y, ww, hh))
+        boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
+
         if len(boxes) < 6:
-            return [], "Bordered mode: could not detect enough cell boxes. Try Borderless mode, or enable Enhance/Deskew, or increase DPI/clarity."
+            return [], "Bordered: not enough cells detected. Try Borderless, increase clarity/DPI, or enable Enhance/Deskew."
 
         texts = []
-        rgb = np.array(img.convert("RGB"))
-        for (x, y, w, h) in boxes:
-            crop = rgb[y:y+h, x:x+w]
-            # detail=1 -> boxes; detail=0 -> texts
+        for (x, y, ww, hh) in boxes:
+            crop = rgb[y:y+hh, x:x+ww]
             parts = reader.readtext(crop, detail=1)
-            good = [p for p in parts if len(p) >= 3 and float(p[2]) >= conf01]
+            good = [p for p in parts if len(p) >= 3 and float(p[2]) >= conf01 and str(p[1]).strip()]
             if not good:
                 texts.append("")
             else:
-                # sort left-to-right in crop
                 good = sorted(good, key=lambda p: p[0][0][0])
-                texts.append(" ".join([str(p[1]).strip() for p in good if str(p[1]).strip()]).strip())
+                texts.append(" ".join([str(p[1]).strip() for p in good]).strip())
 
-        df = _boxes_to_grid_df(boxes, texts)
+        centers = np.array([(x + ww / 2, y + hh / 2) for (x, y, ww, hh) in boxes], dtype=float)
+        xs = centers[:, 0].tolist()
+        ys = centers[:, 1].tolist()
+
+        def cluster(vals: List[float], gap: float) -> List[int]:
+            order = np.argsort(vals)
+            cid = np.zeros(len(vals), dtype=int)
+            cur = 0
+            prev = None
+            for idx in order:
+                v = vals[idx]
+                if prev is None:
+                    cid[idx] = cur
+                    prev = v
+                    continue
+                if abs(v - prev) > gap:
+                    cur += 1
+                cid[idx] = cur
+                prev = v
+            return cid.tolist()
+
+        row_ids = cluster(ys, gap=18.0)
+        col_ids = cluster(xs, gap=28.0)
+
+        n_rows = max(row_ids) + 1
+        n_cols = max(col_ids) + 1
+        grid_cells = [["" for _ in range(n_cols)] for _ in range(n_rows)]
+
+        for i, t in enumerate(texts):
+            r = row_ids[i]
+            c = col_ids[i]
+            grid_cells[r][c] = (grid_cells[r][c] + " " + t).strip() if grid_cells[r][c] else t
+
+        df = pd.DataFrame(grid_cells)
+        df = df.replace("", np.nan).dropna(axis=0, how="all").dropna(axis=1, how="all").fillna("")
         if df.empty:
-            return [], "Bordered mode: detected boxes but produced empty grid. Try Borderless mode."
-        return [df], f"Bordered mode: extracted 1 table with {df.shape[0]} rows × {df.shape[1]} cols."
+            return [], "Bordered: detected cells but table was empty after cleaning."
+        return [df], f"Bordered: extracted table {df.shape[0]}×{df.shape[1]}."
 
     # Borderless mode (best-effort)
-    arr = np.array(img.convert("RGB"))
-    parts = reader.readtext(arr, detail=1)
+    parts = reader.readtext(rgb, detail=1)
     good = [p for p in parts if len(p) >= 3 and float(p[2]) >= conf01 and str(p[1]).strip()]
     if not good:
-        return [], "Borderless mode: no OCR text found above confidence threshold."
+        return [], "Borderless: no OCR text found above confidence threshold."
 
-    # sort by y then x
     good = sorted(good, key=lambda p: (p[0][0][1], p[0][0][0]))
     lines: List[str] = []
-    current = []
+    cur = []
     last_y = None
     for box, txt, conf in good:
         y = float(box[0][1])
         if last_y is None or abs(y - last_y) < 14:
-            current.append(str(txt).strip())
+            cur.append(str(txt).strip())
         else:
-            lines.append(" ".join(current).strip())
-            current = [str(txt).strip()]
+            lines.append(" ".join(cur).strip())
+            cur = [str(txt).strip()]
         last_y = y
-    if current:
-        lines.append(" ".join(current).strip())
+    if cur:
+        lines.append(" ".join(cur).strip())
 
     rows = [re.split(r"\s{2,}", ln.strip()) for ln in lines if ln.strip()]
     max_cols = max((len(r) for r in rows), default=0)
     padded = [r + [""] * (max_cols - len(r)) for r in rows]
     df = pd.DataFrame(padded).replace("", np.nan).dropna(axis=0, how="all").dropna(axis=1, how="all").fillna("")
     if df.empty:
-        return [], "Borderless mode: OCR found text but failed to build a table."
-    return [df], f"Borderless mode: extracted 1 table with {df.shape[0]} rows × {df.shape[1]} cols (best-effort)."
+        return [], "Borderless: OCR found text but failed to build a table."
+    return [df], f"Borderless: extracted table {df.shape[0]}×{df.shape[1]} (best-effort)."
 
 
 # ============================================================
-# Office conversions
+# PDF -> DOCX (high-fidelity attempt)
+# ============================================================
+def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
+    from pdf2docx import Converter
+    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    in_path = f"/tmp/in_{tmp_id}.pdf"
+    out_path = f"/tmp/out_{tmp_id}.docx"
+    with open(in_path, "wb") as f:
+        f.write(pdf_bytes)
+    try:
+        cv = Converter(in_path)
+        cv.convert(out_path, start=0, end=None)
+        cv.close()
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (in_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+
+# ============================================================
+# Excel / Word / PPT helpers (same as your earlier)
 # ============================================================
 def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 90, max_cols: int = 14) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
@@ -711,19 +598,16 @@ def excel_to_word_docx_bytes(xlsx_bytes: bytes, max_rows: int = 120, max_cols: i
 
 def word_to_excel_tables(docx_bytes: bytes) -> Optional[bytes]:
     from docx import Document
-
     doc = Document(io.BytesIO(docx_bytes))
     if not doc.tables:
         return None
-
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         for i, t in enumerate(doc.tables, start=1):
             rows = []
             for r in t.rows:
                 rows.append([c.text.strip() for c in r.cells])
-            df = pd.DataFrame(rows)
-            df.to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False, header=False)
+            pd.DataFrame(rows).to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False, header=False)
     return out.getvalue()
 
 
@@ -735,54 +619,30 @@ def docx_to_plain_text(docx_bytes: bytes) -> str:
 
 
 # ============================================================
-# PDF -> DOCX (High-fidelity attempt for text PDFs)
-# ============================================================
-def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
-    from pdf2docx import Converter
-    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    in_path = f"/tmp/in_{tmp_id}.pdf"
-    out_path = f"/tmp/out_{tmp_id}.docx"
-    with open(in_path, "wb") as f:
-        f.write(pdf_bytes)
-    try:
-        cv = Converter(in_path)
-        cv.convert(out_path, start=0, end=None)
-        cv.close()
-        with open(out_path, "rb") as f:
-            return f.read()
-    finally:
-        for p in (in_path, out_path):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
-
-
-# ============================================================
 # Session state
 # ============================================================
 if "outputs" not in st.session_state:
-    st.session_state.outputs = {}  # name -> bytes
-
-if "last_task_label" not in st.session_state:
-    st.session_state.last_task_label = None
+    st.session_state.outputs = {}
 
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []  # list of dicts
+
+if "prefill_task_key" not in st.session_state:
+    st.session_state.prefill_task_key = None  # from history "Use again"
 
 
-def push_history(task_label: str, fname: str):
+def push_history(task_label: str, task_key: str, fname: str):
     st.session_state.history.insert(0, {
         "time": datetime.utcnow().strftime("%H:%M:%S"),
         "task": task_label,
+        "task_key": task_key,
         "file": fname,
     })
-    st.session_state.history = st.session_state.history[:20]
+    st.session_state.history = st.session_state.history[:50]
 
 
 # ============================================================
-# Sidebar - clean
+# Sidebar (history at bottom; does NOT affect conversion unless "Use again")
 # ============================================================
 with st.sidebar:
     st.markdown("### Settings")
@@ -795,25 +655,62 @@ with st.sidebar:
         enhance = st.checkbox("Enhance image", value=True)
         deskew = st.checkbox("Deskew", value=True)
 
-    st.markdown("### History")
+    st.markdown("---")
+    st.markdown("### History (last 4 visible)")
+    st.caption("History never changes your conversion unless you click **Use again**.")
+
     if st.session_state.history:
-        for h in st.session_state.history[:8]:
-            st.caption(f"• {h['time']} — {h['task']}")
+        st.markdown('<div class="histbox">', unsafe_allow_html=True)
+        # Render all; box scrolls after ~4
+        for i, h in enumerate(st.session_state.history):
+            # Use a small button to prefill, but not auto convert
+            cols = st.columns([0.78, 0.22])
+            with cols[0]:
+                st.markdown(
+                    f"<div class='histitem'><b>{h['task']}</b><div class='histmeta'>{h['time']} • {h['file']}</div></div>",
+                    unsafe_allow_html=True
+                )
+            with cols[1]:
+                if st.button("Use again", key=f"use_{i}", help="Prefills conversion dropdown (does not auto-run)"):
+                    st.session_state.prefill_task_key = h.get("task_key")
+            st.write("")
+        st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.caption("No conversions yet.")
 
 
 # ============================================================
-# Permanent layout: Upload | Detected | Choose | Convert | Download
+# Static faded formats bar (always visible)
 # ============================================================
-col_left, col_right = st.columns([1.1, 1.0])
+st.markdown(
+    """
+    <div class="formatbar">
+      <div class="fmt"><b>PDF</b> → Word</div>
+      <div class="fmt"><b>PDF</b> → Tables (Excel)</div>
+      <div class="fmt"><b>PDF</b> → Images</div>
+      <div class="fmt"><b>PDF</b> → Searchable</div>
+      <div class="fmt"><b>Image</b> → OCR Text</div>
+      <div class="fmt"><b>Image</b> → Tables (Excel)</div>
+      <div class="fmt"><b>Excel</b> → PDF</div>
+      <div class="fmt"><b>Word</b> → Tables (Excel)</div>
+      <div class="fmt"><b>PPT</b> → Text/Images</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-# ---------------- Left: Upload + detection + conversion choose
+
+# ============================================================
+# Main layout: Left card (upload/choose) | Right card (convert/download)
+# All internal scrolling only
+# ============================================================
+col_left, col_right = st.columns([1.08, 1.0], gap="large")
+
 with col_left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<div class="step"><b>1</b> Upload</div>', unsafe_allow_html=True)
-    st.write("")
 
+    st.write("")
     uploaded = st.file_uploader(
         "Upload file",
         type=["pdf", "png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp", "docx", "xlsx", "xlsm", "pptx"],
@@ -829,13 +726,9 @@ with col_left:
         file_bytes = uploaded.read()
         ftype = infer_type(filename)
         base = safe_filename(os.path.splitext(filename)[0])
-
         st.markdown(
-            f"""
-            <span class="pill"><b>{ftype}</b></span>
-            <span class="pill">{filename}</span>
-            """,
-            unsafe_allow_html=True,
+            f"""<span class="pill"><b>{ftype}</b></span><span class="pill">{filename}</span>""",
+            unsafe_allow_html=True
         )
         st.caption("File loaded and ready.")
     else:
@@ -845,9 +738,7 @@ with col_left:
         base = "output"
         st.markdown('<div class="muted">No file uploaded yet.</div>', unsafe_allow_html=True)
 
-    st.write("")
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
     st.markdown('<div class="step"><b>3</b> Choose conversion</div>', unsafe_allow_html=True)
     st.write("")
 
@@ -855,8 +746,8 @@ with col_left:
         "PDF": [
             ("Extract Tables → Excel/CSV/JSON (ZIP)", "pdf_tables"),
             ("Extract Text (Hybrid) → TXT", "pdf_text_txt"),
-            ("Convert → Word (DOCX) (High-fidelity if text PDF)", "pdf_to_docx"),
-            ("Create Searchable PDF (OCR layer) (Web-only)", "pdf_searchable"),
+            ("Convert → Word (DOCX) (High fidelity if text PDF)", "pdf_to_docx"),
+            ("Create Searchable PDF (OCR layer)", "pdf_searchable"),
             ("Pages → PNG (ZIP)", "pdf_pages_png"),
             ("Metadata → JSON", "pdf_meta_json"),
         ],
@@ -864,7 +755,7 @@ with col_left:
             ("OCR Image → TXT", "img_text_txt"),
             ("Extract Tables → Excel/CSV/JSON (ZIP)", "img_tables"),
             ("Convert → PDF", "img_to_pdf"),
-            ("Convert → Searchable PDF (OCR layer) (Web-only)", "img_searchable_pdf"),
+            ("Convert → Searchable PDF (OCR layer)", "img_searchable_pdf"),
         ],
         "EXCEL": [
             ("Convert → PDF", "xlsx_to_pdf"),
@@ -884,20 +775,30 @@ with col_left:
     task_labels = [t[0] for t in task_options] if task_options else ["Upload a file to see conversions"]
     task_disabled = not bool(uploaded and task_options)
 
-    task_label = st.selectbox(
-        "Conversion",
-        task_labels,
-        index=0,
-        disabled=task_disabled,
-    )
+    # Prefill logic from history (does not run conversion)
+    prefill_key = st.session_state.prefill_task_key
+    st.session_state.prefill_task_key = None  # consume
 
     task_key = None
     if not task_disabled:
-        task_key = dict(task_options)[task_label]
+        # Pick index by prefill_key if available
+        keys = [k for _, k in task_options]
+        idx = 0
+        if prefill_key in keys:
+            idx = keys.index(prefill_key)
 
+        task_label = st.selectbox("Conversion", task_labels, index=idx, disabled=task_disabled)
+        task_key = dict(task_options).get(task_label)
+    else:
+        task_label = st.selectbox("Conversion", task_labels, index=0, disabled=True)
+        task_key = None
+
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="muted">Tip: For image/scanned PDF tables, try <b>bordered</b> first. If no grid lines, switch to <b>borderless</b>.</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------------- Right: Convert + Download (always visible)
+
 with col_right:
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
@@ -907,15 +808,14 @@ with col_right:
     convert_disabled = not (uploaded and task_key)
     convert_btn = st.button("Convert", type="primary", disabled=convert_disabled)
 
-    st.write("")
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
     st.markdown('<div class="step"><b>5</b> Download</div>', unsafe_allow_html=True)
     st.write("")
 
+    # download panel is internal scroll
+    st.markdown('<div class="panel-scroll">', unsafe_allow_html=True)
+
     outputs_ready = bool(st.session_state.outputs)
-    download_area_class = "" if outputs_ready else "disabled"
-    st.markdown(f'<div class="{download_area_class}">', unsafe_allow_html=True)
 
     if not outputs_ready:
         st.caption("Downloads will appear here after conversion.")
@@ -930,23 +830,25 @@ with col_right:
                 file_name=out_name,
                 mime=mime_for(out_name),
                 key=f"dl_{out_name}_{now_stamp()}",
+                use_container_width=True
             )
 
         zname = f"{safe_filename(os.path.splitext(filename)[0])}_all_{now_stamp()}.zip" if filename else f"bundle_{now_stamp()}.zip"
         st.download_button(
-            label=f"Download ALL as ZIP",
+            label="Download ALL as ZIP",
             data=build_zip(st.session_state.outputs),
             file_name=zname,
             mime="application/zip",
             key=f"dl_zip_{now_stamp()}",
+            use_container_width=True
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)  # panel-scroll
+    st.markdown("</div>", unsafe_allow_html=True)  # card
 
 
 # ============================================================
-# Conversion execution
+# Conversion execution (History NEVER auto-triggers)
 # ============================================================
 if convert_btn and uploaded and task_key and file_bytes and filename:
     st.session_state.outputs = {}
@@ -962,8 +864,7 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
 
         elif task_key == "pdf_to_docx":
-            # Prefer high-fidelity converter for text PDFs (best possible web-only)
-            # If it fails, fall back to OCR/Hybrid -> docx paragraphs
+            # High-fidelity try
             try:
                 docx_bytes = pdf_to_docx_high_fidelity(file_bytes)
                 outputs[f"{base}.docx"] = docx_bytes
@@ -984,19 +885,16 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
 
         elif task_key == "pdf_tables":
             tables = []
-            # 1) text-layer tables (fast, clean)
             try:
                 tables = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
             except Exception:
                 tables = []
 
-            # 2) OCR fallback: render pages -> table OCR (bordered/borderless)
             if not tables:
                 imgs = pdf_render_pages_to_images(file_bytes, dpi=ocr_dpi, max_pages=max_pages)
                 ocr_tables: List[pd.DataFrame] = []
-                logs = []
-                for i, im in enumerate(imgs, start=1):
-                    tbs, lg = extract_table_from_image_webonly(
+                for im in imgs:
+                    tbs, _lg = extract_table_from_image_webonly(
                         im,
                         lang_ui=ocr_lang,
                         min_conf_0_100=min_conf,
@@ -1004,12 +902,11 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
                         enhance=enhance,
                         deskew=deskew
                     )
-                    logs.append(f"Page {i}: {lg}")
                     ocr_tables.extend(tbs)
                 tables = ocr_tables
 
             if not tables:
-                raise RuntimeError("No tables found in this PDF. Try increasing DPI, switching Table mode, or using a clearer scan.")
+                raise RuntimeError("No tables found in this PDF. Try increasing DPI, switching Table mode, or use a clearer scan.")
 
             root = f"{base}_tables_{now_stamp()}"
             bundle = build_tables_bundle(tables, base=root)
@@ -1024,10 +921,45 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}_metadata.json"] = pdf_metadata_to_json(file_bytes)
 
         elif task_key == "pdf_searchable":
+            # Web-only searchable PDF is not perfect like ocrmypdf but works for search.
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.utils import ImageReader
+            from reportlab.lib.colors import Color
+
             conf01 = max(0.10, min(0.95, float(min_conf) / 100.0))
-            outputs[f"{base}_searchable.pdf"] = make_searchable_pdf_from_pdf(
-                file_bytes, lang=ocr_lang, dpi=ocr_dpi, max_pages=max_pages, conf01=conf01
-            )
+            reader = _easyocr_reader(_ui_lang_to_easyocr(ocr_lang))
+            imgs = pdf_render_pages_to_images(file_bytes, dpi=ocr_dpi, max_pages=max_pages)
+
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf)
+            invisible = Color(0, 0, 0, alpha=0.01)
+
+            for page_img in imgs:
+                w_px, h_px = page_img.size
+                c.setPageSize((w_px, h_px))
+                c.drawImage(ImageReader(page_img), 0, 0, width=w_px, height=h_px, mask='auto')
+                arr = np.array(page_img.convert("RGB"))
+                results = reader.readtext(arr, detail=1)
+
+                c.setFillColor(invisible)
+                for box, text, conf in results:
+                    if float(conf) < conf01:
+                        continue
+                    if not text or not str(text).strip():
+                        continue
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    x_min, x_max = float(min(xs)), float(max(xs))
+                    y_min, y_max = float(min(ys)), float(max(ys))
+                    pdf_x = x_min
+                    pdf_y = h_px - y_max
+                    font_size = max(6.0, min(24.0, (y_max - y_min) * 0.8))
+                    c.setFont("Helvetica", font_size)
+                    c.drawString(pdf_x, pdf_y, re.sub(r"\s+", " ", str(text))[:200])
+                c.showPage()
+
+            c.save()
+            outputs[f"{base}_searchable.pdf"] = buf.getvalue()
 
         # IMAGE
         elif task_key == "img_text_txt":
@@ -1042,12 +974,47 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}.pdf"] = buf.getvalue()
 
         elif task_key == "img_searchable_pdf":
+            # searchable PDF from single image (overlay text)
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.utils import ImageReader
+            from reportlab.lib.colors import Color
+
             conf01 = max(0.10, min(0.95, float(min_conf) / 100.0))
-            outputs[f"{base}_searchable.pdf"] = make_searchable_pdf_from_image(file_bytes, lang=ocr_lang, conf01=conf01)
+            reader = _easyocr_reader(_ui_lang_to_easyocr(ocr_lang))
+            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            w_px, h_px = img.size
+            arr = np.array(img.convert("RGB"))
+            results = reader.readtext(arr, detail=1)
+
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf, pagesize=(w_px, h_px))
+            c.drawImage(ImageReader(img), 0, 0, width=w_px, height=h_px, mask='auto')
+            invisible = Color(0, 0, 0, alpha=0.01)
+            c.setFillColor(invisible)
+
+            for box, text, conf in results:
+                if float(conf) < conf01:
+                    continue
+                if not text or not str(text).strip():
+                    continue
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                x_min, x_max = float(min(xs)), float(max(xs))
+                y_min, y_max = float(min(ys)), float(max(ys))
+                pdf_x = x_min
+                pdf_y = h_px - y_max
+                font_size = max(6.0, min(24.0, (y_max - y_min) * 0.8))
+                c.setFont("Helvetica", font_size)
+                c.drawString(pdf_x, pdf_y, re.sub(r"\s+", " ", str(text))[:200])
+
+            c.showPage()
+            c.save()
+
+            outputs[f"{base}_searchable.pdf"] = buf.getvalue()
 
         elif task_key == "img_tables":
             im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            tables, lg = extract_table_from_image_webonly(
+            tables, _lg = extract_table_from_image_webonly(
                 im,
                 lang_ui=ocr_lang,
                 min_conf_0_100=min_conf,
@@ -1055,9 +1022,8 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
                 enhance=enhance,
                 deskew=deskew
             )
-
             if not tables:
-                raise RuntimeError("No tables found in this image. Try Table mode=borderless, enable Enhance/Deskew, or use a clearer image.")
+                raise RuntimeError("No tables found in this image. Try borderless mode, enable Enhance/Deskew, or use a clearer image.")
 
             root = f"{base}_tables_{now_stamp()}"
             bundle = build_tables_bundle(tables, base=root)
@@ -1113,7 +1079,6 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             for si, slide in enumerate(prs.slides, start=1):
                 for shape in slide.shapes:
                     try:
-                        # MSO_SHAPE_TYPE.PICTURE == 13
                         if shape.shape_type == 13:
                             image = shape.image
                             ext = (image.ext or "bin").lower()
@@ -1129,10 +1094,8 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             raise RuntimeError("Conversion not implemented.")
 
         st.session_state.outputs = outputs
-        st.session_state.last_task_label = task_label
-        push_history(task_label, filename)
-
-        st.success("Conversion completed. Downloads are ready on the right panel.")
+        push_history(task_label=task_label, task_key=task_key, fname=filename)
+        st.success("Conversion completed. Downloads are ready.")
 
     except Exception as e:
         st.session_state.outputs = {}
