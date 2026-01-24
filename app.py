@@ -5,7 +5,7 @@ import json
 import zipfile
 import tempfile
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import streamlit as st
 import pandas as pd
@@ -13,46 +13,56 @@ from PIL import Image
 
 
 # ============================================================
-# Page config + simple "professional" styling
+# Page config + professional styling (Smallpdf-like clean UI)
 # ============================================================
 st.set_page_config(page_title="Pro Document Converter", layout="wide")
 
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
-      .small-muted { color: rgba(255,255,255,0.65); font-size: 0.9rem; }
+      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1200px; }
+      .muted { color: rgba(255,255,255,0.65); font-size: 0.92rem; }
       .card {
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 16px;
         padding: 14px 16px;
-        background: rgba(255,255,255,0.02);
+        background: rgba(255,255,255,0.03);
       }
-      .card h4 { margin: 0 0 6px 0; }
-      .hr {
-        height: 1px; background: rgba(255,255,255,0.08);
-        border: none; margin: 12px 0;
+      .kpi {
+        font-size: 0.9rem;
+        color: rgba(255,255,255,0.75);
       }
-      .pill {
+      .badge {
         display: inline-block;
         padding: 4px 10px;
         border-radius: 999px;
         border: 1px solid rgba(255,255,255,0.14);
-        background: rgba(255,255,255,0.03);
+        background: rgba(255,255,255,0.04);
         font-size: 0.85rem;
         margin-right: 6px;
       }
+      .divider { height: 1px; background: rgba(255,255,255,0.10); border: none; margin: 14px 0; }
+      .step {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.03);
+        font-size: 0.9rem;
+        margin-right: 8px;
+      }
+      .btnrow > div { display: inline-block; margin-right: 10px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 st.title("🧰 Pro Document Converter")
-st.caption("Web-based multi-format converter: PDF/Image/Office → data/doc formats + ZIP bundles. Includes Excel → PDF and conversion history.")
+st.caption("Upload → Choose → Convert → Download • Web-only, fast, and reliable conversions (PDF / Image / Word / Excel / PPT).")
 
 
 # ============================================================
-# Utilities
+# Helpers
 # ============================================================
 def now_stamp() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -95,6 +105,21 @@ def is_pptx(name: str) -> bool:
     return name.lower().endswith(".pptx")
 
 
+def detect_type(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".pdf":
+        return "PDF"
+    if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+        return "IMAGE"
+    if ext == ".docx":
+        return "WORD"
+    if ext in [".xlsx", ".xlsm"]:
+        return "EXCEL"
+    if ext == ".pptx":
+        return "PPT"
+    return "UNKNOWN"
+
+
 def to_displayable_image(obj):
     try:
         if isinstance(obj, Image.Image):
@@ -115,7 +140,7 @@ def to_displayable_image(obj):
 
 
 # ============================================================
-# Text cleanup (RAW vs CLEAN)
+# Text cleanup for OCR/table extraction
 # ============================================================
 def _collapse_spaces(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
@@ -157,7 +182,7 @@ def normalize_cell_text_clean(val):
 
 
 # ============================================================
-# PDF capabilities
+# PDF / OCR / Tables core logic (same as before, organized)
 # ============================================================
 def pdf_metadata_to_dict(pdf_bytes: bytes) -> Dict[str, Any]:
     from pypdf import PdfReader
@@ -213,25 +238,6 @@ def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, lang: str, dpi: in
     return out
 
 
-def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple[bytes, int]:
-    images = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
-    files = {}
-    for i, im in enumerate(images, start=1):
-        buf = io.BytesIO()
-        im.save(buf, format="PNG")
-        files[f"pdf_pages/page_{i:03d}.png"] = buf.getvalue()
-
-    files["manifest.json"] = json.dumps(
-        {"type": "pdf_to_images", "page_count": len(images), "dpi": dpi, "created": now_stamp()},
-        indent=2
-    ).encode("utf-8")
-
-    return build_zip(files), len(images)
-
-
-# ============================================================
-# Tables extraction (PDF text-layer first, fallback OCR)
-# ============================================================
 def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int) -> List[pd.DataFrame]:
     import pdfplumber
     dfs: List[pd.DataFrame] = []
@@ -278,7 +284,6 @@ def table_to_df_safe(table) -> Optional[pd.DataFrame]:
 def df_to_json_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
     df2 = df.copy()
 
-    # Fix column names (None/empty/duplicates)
     cols = []
     for i, c in enumerate(df2.columns):
         name = str(c).strip() if c is not None else ""
@@ -320,7 +325,6 @@ def build_tables_bundle(tables: List[pd.DataFrame], normalizer, base_root: str) 
                     cell.alignment = Alignment(wrap_text=False, vertical="top")
     files[f"{base_root}.xlsx"] = excel_buf.getvalue()
 
-    # CSV + JSON per table and combined
     combined_csv_parts = []
     combined_json = {"tables": []}
 
@@ -345,31 +349,27 @@ def build_tables_bundle(tables: List[pd.DataFrame], normalizer, base_root: str) 
     return files
 
 
+def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple[bytes, int]:
+    images = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
+    files = {}
+    for i, im in enumerate(images, start=1):
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        files[f"pdf_pages/page_{i:03d}.png"] = buf.getvalue()
+
+    files["manifest.json"] = json.dumps(
+        {"type": "pdf_to_images", "page_count": len(images), "dpi": dpi, "created": now_stamp()},
+        indent=2
+    ).encode("utf-8")
+
+    return build_zip(files), len(images)
+
+
 # ============================================================
-# Office conversions: DOCX, XLSX, PPTX
+# Office conversions: Excel <-> Word + more outputs
 # ============================================================
-def docx_to_text_html_md(docx_bytes: bytes) -> Tuple[str, str, str]:
-    from docx import Document
-    from markdownify import markdownify as mdify
-
-    doc = Document(io.BytesIO(docx_bytes))
-    paragraphs = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
-    text = "\n".join(paragraphs).strip()
-
-    # Minimal HTML
-    html_lines = []
-    for p in paragraphs:
-        # basic escaping
-        p2 = (p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        html_lines.append(f"<p>{p2}</p>")
-    html = "\n".join(html_lines).strip()
-
-    md = mdify(html) if html else (text or "")
-    return text or "", html or "", md or ""
-
-
 def text_to_pdf_bytes(title: str, text: str) -> bytes:
-    # Web-safe text-only PDF
+    # Web-safe text-only PDF (readable text, selectable)
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
 
@@ -387,7 +387,6 @@ def text_to_pdf_bytes(title: str, text: str) -> bytes:
     for line in (text or "").splitlines():
         line = line.rstrip()
 
-        # wrap long lines
         while len(line) > 120:
             c.drawString(margin, y, line[:120])
             line = line[120:]
@@ -409,11 +408,6 @@ def text_to_pdf_bytes(title: str, text: str) -> bytes:
 
 
 def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 80, max_cols: int = 12) -> bytes:
-    """
-    Excel -> PDF (table-style).
-    - One section per sheet
-    - Truncates very large sheets (web-safe)
-    """
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib import colors
@@ -424,18 +418,13 @@ def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 80, max_cols: int = 12
 
     xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
     for si, sheet in enumerate(xls.sheet_names, start=1):
-        df = xls.parse(sheet)
-        df = df.copy()
-
-        # truncate
+        df = xls.parse(sheet).copy()
         df = df.iloc[:max_rows, :max_cols]
 
-        # title
         story.append(Paragraph(f"Sheet: {sheet}", styles["Heading2"]))
         story.append(Paragraph(f"Exported: {now_stamp()}", styles["Normal"]))
         story.append(Spacer(1, 10))
 
-        # build table
         data = [list(df.columns.astype(str))] + df.astype(str).values.tolist()
         tbl = Table(data, repeatRows=1)
 
@@ -451,29 +440,101 @@ def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 80, max_cols: int = 12
 
         story.append(tbl)
         story.append(Spacer(1, 14))
-
         if si < len(xls.sheet_names):
             story.append(PageBreak())
 
     buf = io.BytesIO()
-    # landscape is better for tables
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), rightMargin=18, leftMargin=18, topMargin=18, bottomMargin=18)
     doc.build(story)
     return buf.getvalue()
 
 
-def xlsx_to_outputs(xlsx_bytes: bytes) -> Dict[str, bytes]:
-    """
-    XLSX -> CSV/JSON/HTML/Markdown + Excel->PDF + ZIP
-    Exports per sheet and combined JSON.
-    """
+def excel_to_word_docx(xlsx_bytes: bytes, max_rows: int = 60, max_cols: int = 12) -> bytes:
+    # Excel -> Word (tables). Web-safe (truncates large sheets)
+    from docx import Document
+
+    xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
+    doc = Document()
+    doc.add_heading("Excel to Word Export", level=1)
+    doc.add_paragraph(f"Created: {now_stamp()}")
+
+    for sheet in xls.sheet_names:
+        df = xls.parse(sheet).copy()
+        df = df.iloc[:max_rows, :max_cols]
+
+        doc.add_heading(f"Sheet: {sheet}", level=2)
+
+        # Create table with headers
+        rows = df.shape[0] + 1
+        cols = df.shape[1] if df.shape[1] > 0 else 1
+        table = doc.add_table(rows=rows, cols=cols)
+        table.style = "Table Grid"
+
+        # headers
+        for j, col in enumerate(df.columns.astype(str).tolist()):
+            table.cell(0, j).text = col
+
+        # data
+        for i in range(df.shape[0]):
+            for j in range(df.shape[1]):
+                table.cell(i + 1, j).text = "" if pd.isna(df.iat[i, j]) else str(df.iat[i, j])
+
+        doc.add_paragraph("")
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def word_to_excel_tables(docx_bytes: bytes) -> bytes:
+    # Word -> Excel (extract tables only)
+    from docx import Document
+
+    doc = Document(io.BytesIO(docx_bytes))
+    tables = doc.tables
+
+    excel_buf = io.BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        if not tables:
+            # create an empty sheet with note
+            pd.DataFrame([{"note": "No tables found in DOCX."}]).to_excel(writer, sheet_name="Info", index=False)
+        else:
+            for idx, t in enumerate(tables, start=1):
+                rows = []
+                for row in t.rows:
+                    rows.append([cell.text.strip() for cell in row.cells])
+                df = pd.DataFrame(rows)
+                df.to_excel(writer, sheet_name=f"Table_{idx}"[:31], index=False, header=False)
+
+    return excel_buf.getvalue()
+
+
+def docx_to_text_html_md(docx_bytes: bytes) -> Tuple[str, str, str]:
+    from docx import Document
+    from markdownify import markdownify as mdify
+
+    doc = Document(io.BytesIO(docx_bytes))
+    paragraphs = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+    text = "\n".join(paragraphs).strip()
+
+    html_lines = []
+    for p in paragraphs:
+        p2 = (p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        html_lines.append(f"<p>{p2}</p>")
+    html = "\n".join(html_lines).strip()
+
+    md = mdify(html) if html else (text or "")
+    return text or "", html or "", md or ""
+
+
+def xlsx_to_outputs_bundle(xlsx_bytes: bytes) -> Dict[str, bytes]:
+    # Excel -> CSV/JSON/HTML/MD per sheet + combined JSON + PDF + Word + manifest
     from markdownify import markdownify as mdify
 
     xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
     files: Dict[str, bytes] = {}
     combined = {"sheets": []}
 
-    # Sheet exports
     for sheet in xls.sheet_names:
         df = xls.parse(sheet)
         safe = safe_filename(sheet) or "Sheet"
@@ -489,14 +550,12 @@ def xlsx_to_outputs(xlsx_bytes: bytes) -> Dict[str, bytes]:
         combined["sheets"].append({"sheet": sheet, "rows": records})
 
     files["excel/combined.json"] = json.dumps(combined, ensure_ascii=False, indent=2).encode("utf-8")
-
-    # NEW: Excel -> PDF
     files["excel/output.pdf"] = excel_to_pdf_bytes(xlsx_bytes)
+    files["excel/output.docx"] = excel_to_word_docx(xlsx_bytes)
 
     files["excel/manifest.json"] = json.dumps(
-        {"type": "excel_export", "sheet_count": len(xls.sheet_names), "created": now_stamp()},
-        ensure_ascii=False,
-        indent=2,
+        {"type": "excel_bundle", "sheet_count": len(xls.sheet_names), "created": now_stamp()},
+        ensure_ascii=False, indent=2
     ).encode("utf-8")
 
     return files
@@ -507,7 +566,6 @@ def pptx_to_text_json_images(pptx_bytes: bytes) -> Dict[str, bytes]:
 
     prs = Presentation(io.BytesIO(pptx_bytes))
     files: Dict[str, bytes] = {}
-
     all_text = []
     slides_json = []
     img_count = 0
@@ -519,15 +577,14 @@ def pptx_to_text_json_images(pptx_bytes: bytes) -> Dict[str, bytes]:
                 t = shape.text.strip()
                 if t:
                     slide_text_parts.append(t)
-
-            # extract embedded images (not full slide render)
+            # extract embedded images
             try:
                 if shape.shape_type == 13:  # PICTURE
                     image = shape.image
                     img_bytes = image.blob
                     ext = (image.ext or "bin").lower()
                     img_count += 1
-                    files[f"pptx/images/slide_{si:03d}_img_{img_count:03d}.{ext}"] = img_bytes
+                    files[f"ppt/images/slide_{si:03d}_img_{img_count:03d}.{ext}"] = img_bytes
             except Exception:
                 pass
 
@@ -535,18 +592,20 @@ def pptx_to_text_json_images(pptx_bytes: bytes) -> Dict[str, bytes]:
         all_text.append(f"--- Slide {si} ---\n{slide_text}".strip())
         slides_json.append({"slide": si, "text": slide_text})
 
-    files["pptx/slides.txt"] = ("\n\n".join(all_text).strip() + "\n").encode("utf-8")
-    files["pptx/slides.json"] = json.dumps({"slides": slides_json}, ensure_ascii=False, indent=2).encode("utf-8")
-    files["pptx/manifest.json"] = json.dumps(
-        {"type": "pptx_export", "slide_count": len(prs.slides), "extracted_images": img_count, "created": now_stamp()},
-        ensure_ascii=False,
-        indent=2,
+    files["ppt/slides.txt"] = ("\n\n".join(all_text).strip() + "\n").encode("utf-8")
+    files["ppt/slides.json"] = json.dumps({"slides": slides_json}, ensure_ascii=False, indent=2).encode("utf-8")
+    files["ppt/slides.pdf"] = text_to_pdf_bytes("PPT Text Export", files["ppt/slides.txt"].decode("utf-8", errors="ignore"))
+
+    files["ppt/manifest.json"] = json.dumps(
+        {"type": "ppt_bundle", "slide_count": len(prs.slides), "extracted_images": img_count, "created": now_stamp()},
+        ensure_ascii=False, indent=2
     ).encode("utf-8")
+
     return files
 
 
 # ============================================================
-# Optional: Searchable PDF (OCR Layer)
+# Optional Searchable PDF (OCR layer) – requires ocrmypdf + OS deps
 # ============================================================
 def ocrmypdf_available() -> bool:
     try:
@@ -556,7 +615,7 @@ def ocrmypdf_available() -> bool:
         return False
 
 
-def make_searchable_pdf(pdf_bytes: bytes, lang: str = "eng") -> bytes:
+def make_searchable_pdf_from_pdf(pdf_bytes: bytes, lang: str = "eng") -> bytes:
     import ocrmypdf
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f_in:
@@ -586,10 +645,22 @@ def make_searchable_pdf(pdf_bytes: bytes, lang: str = "eng") -> bytes:
 
 
 # ============================================================
-# Session state: history + last outputs
+# Image -> PDF with readable text (OCR Text PDF)
+#   - Creates a PDF containing OCR text as selectable text (no image background).
+#   - For true "searchable PDF over image", use ocrmypdf optional path.
+# ============================================================
+def image_to_ocr_text_pdf(img_bytes: bytes, lang: str = "eng") -> bytes:
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    text = ocr_image_to_text(img, lang=lang)
+    title = "Image OCR to PDF (Selectable Text)"
+    return text_to_pdf_bytes(title, text)
+
+
+# ============================================================
+# Session state: history & last outputs
 # ============================================================
 if "history" not in st.session_state:
-    st.session_state.history = []  # list of dicts
+    st.session_state.history = []  # list of dicts: time/task/input/outputs
 
 if "last_outputs" not in st.session_state:
     st.session_state.last_outputs = {}  # filename -> bytes
@@ -597,166 +668,192 @@ if "last_outputs" not in st.session_state:
 
 def add_history(entry: Dict[str, Any]):
     st.session_state.history.insert(0, entry)
-    st.session_state.history = st.session_state.history[:30]  # keep last 30
+    st.session_state.history = st.session_state.history[:30]
 
 
 # ============================================================
-# Sidebar (clean)
+# Sidebar: Advanced processing options (renamed professionally)
 # ============================================================
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
+    st.markdown("## ⚙️ Processing Options")
+    st.caption("Adjust only if results need improvement.")
 
-    clean_mode = st.selectbox("Table text cleanup", ["Clean (recommended)", "Raw"], index=0)
-    prefer_text_layer_tables = st.checkbox("PDF tables: prefer text layer first", value=True)
+    clean_mode = st.selectbox("Text cleanup", ["Clean (Recommended)", "Raw"], index=0)
+    prefer_text_layer_tables = st.toggle("Prefer PDF text-layer for tables", value=True)
 
-    ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
-    max_pages = st.slider("Max pages (PDF)", 1, 60, 12)
-    ocr_dpi = st.slider("OCR DPI", 200, 400, 260, step=10)
-    min_conf = st.slider("Table OCR min confidence", 0, 100, 50)
+    st.markdown("---")
+    st.markdown("### OCR")
+    ocr_lang = st.selectbox("Language", ["eng"], index=0)
+    max_pages = st.slider("Max pages", 1, 60, 12)
+    ocr_dpi = st.slider("OCR quality (DPI)", 200, 400, 260, step=10)
 
-    show_preview = st.checkbox("Show preview (OCR/PDF render)", value=False)
+    st.markdown("---")
+    st.markdown("### Table Detection")
+    min_conf = st.slider("Confidence threshold", 0, 100, 50)
 
-    st.markdown('<hr class="hr">', unsafe_allow_html=True)
-    st.markdown("### 🕘 History")
+    st.markdown("---")
+    st.markdown("### History")
     if st.session_state.history:
-        with st.expander("View recent conversions", expanded=False):
+        with st.expander("Recent conversions", expanded=False):
             for h in st.session_state.history[:10]:
                 st.markdown(
-                    f"- **{h['time']}** • `{h['input_name']}` • **{h['task']}** • outputs: {', '.join(h['outputs'])}"
+                    f"- **{h['time']}** • `{h['input']}` • **{h['task']}**"
                 )
     else:
         st.caption("No conversions yet.")
 
+normalizer = normalize_cell_text_clean if clean_mode.startswith("Clean") else normalize_cell_text_raw
+
 
 # ============================================================
-# Upload + auto task list by input type
+# Guided workflow UI
 # ============================================================
+st.markdown(
+    """
+    <div class="card">
+      <span class="step">1) Upload</span>
+      <span class="step">2) Choose</span>
+      <span class="step">3) Convert</span>
+      <span class="step">4) Download</span>
+      <div class="muted" style="margin-top:8px;">
+        The converter auto-detects your file type and shows only valid targets.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<hr class="divider">', unsafe_allow_html=True)
+
+# Step 1: Upload
 uploaded = st.file_uploader(
-    "Upload file",
+    "Upload a file",
     type=["pdf", "png", "jpg", "jpeg", "webp", "docx", "xlsx", "xlsm", "pptx"],
+    help="Supported: PDF, Images, Word (.docx), Excel (.xlsx/.xlsm), PowerPoint (.pptx)",
 )
 
 if not uploaded:
-    st.info("Upload a file to begin.")
+    st.info("Upload a file to see available conversions.")
     st.stop()
 
 file_bytes = uploaded.read()
 filename = uploaded.name
 base_name = safe_filename(os.path.splitext(filename)[0])
-normalizer = normalize_cell_text_clean if clean_mode.startswith("Clean") else normalize_cell_text_raw
+kind = detect_type(filename)
 
-# Determine valid tasks for this input type
-tasks_pdf = [
-    "PDF → Tables → Export (Excel/CSV/JSON/ZIP)",
-    "PDF → Text (Hybrid) → TXT/HTML/Markdown/ZIP",
-    "PDF → Word (Hybrid) → DOCX",
-    "PDF → Images (PNG) → ZIP",
-    "PDF → Metadata → JSON",
-    "PDF → Smart Search PDF (OCR layer) (optional)",
-]
-tasks_img = [
-    "Image → OCR Text → TXT",
-    "Image → Tables → Export (Excel/CSV/JSON/ZIP)",
-    "Image → PDF",
-]
-tasks_docx = [
-    "DOCX → TXT/HTML/Markdown/PDF(text-only)/ZIP",
-]
-tasks_xlsx = [
-    "XLSX → CSV/JSON/HTML/Markdown/PDF/ZIP",
-]
-tasks_pptx = [
-    "PPTX → TXT/JSON/Images/PDF(text-only)/ZIP",
-]
+# Top summary cards
+c1, c2, c3 = st.columns([2.0, 1.0, 1.0], gap="medium")
+with c1:
+    st.markdown(
+        f"<div class='card'><h4 style='margin:0 0 6px 0;'>Detected</h4>"
+        f"<span class='badge'>{kind}</span> <span class='badge'>{filename}</span>"
+        f"<div class='muted'>Ready for conversion • {now_stamp()}</div></div>",
+        unsafe_allow_html=True
+    )
+with c2:
+    st.markdown(
+        f"<div class='card'><h4 style='margin:0 0 6px 0;'>Quality</h4>"
+        f"<div class='kpi'>Cleanup: <b>{clean_mode}</b><br/>OCR DPI: <b>{ocr_dpi}</b></div></div>",
+        unsafe_allow_html=True
+    )
+with c3:
+    st.markdown(
+        f"<div class='card'><h4 style='margin:0 0 6px 0;'>Tip</h4>"
+        f"<div class='kpi'>Use <b>ZIP</b> for batch outputs.<br/>Use <b>Hybrid OCR</b> for scanned PDFs.</div></div>",
+        unsafe_allow_html=True
+    )
 
-if is_pdf(filename):
-    valid_tasks = tasks_pdf
-    file_badge = "PDF"
-elif is_image(filename):
-    valid_tasks = tasks_img
-    file_badge = "IMAGE"
-elif is_docx(filename):
-    valid_tasks = tasks_docx
-    file_badge = "DOCX"
-elif is_xlsx(filename):
-    valid_tasks = tasks_xlsx
-    file_badge = "XLSX"
-elif is_pptx(filename):
-    valid_tasks = tasks_pptx
-    file_badge = "PPTX"
-else:
-    valid_tasks = []
-    file_badge = "FILE"
+st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
-# Header cards
-colA, colB, colC = st.columns([2, 1, 1])
-with colA:
-    st.markdown(f"<div class='card'><h4>Input</h4><div class='pill'>{file_badge}</div> <span class='pill'>{filename}</span><div class='small-muted'>Loaded into memory • ready for conversion</div></div>", unsafe_allow_html=True)
-with colB:
-    st.markdown(f"<div class='card'><h4>Mode</h4><div class='small-muted'>Cleanup: <b>{clean_mode}</b><br>OCR lang: <b>{ocr_lang}</b></div></div>", unsafe_allow_html=True)
-with colC:
-    st.markdown(f"<div class='card'><h4>Pro Tips</h4><div class='small-muted'>Use ZIP for batch exports.<br>For scanned PDFs, Hybrid Text is best.</div></div>", unsafe_allow_html=True)
+# Preview + Choice + Output
+left, right = st.columns([1.0, 1.1], gap="large")
 
-st.markdown('<hr class="hr">', unsafe_allow_html=True)
+with left:
+    st.markdown("<div class='card'><h4 style='margin:0 0 10px 0;'>Preview</h4>", unsafe_allow_html=True)
+    if kind == "IMAGE":
+        try:
+            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            st.image(im, use_container_width=True)
+        except Exception:
+            st.caption("Preview not available for this image.")
+    else:
+        st.caption("Preview is shown for images. For PDFs, use conversions to view results.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-# Tabs layout
-tab_convert, tab_outputs, tab_history = st.tabs(["🔁 Convert", "📦 Last Outputs", "🕘 History"])
+# Define conversions (auto-filtered by detected type)
+# Each conversion returns a dict: {filename: bytes}
+CONVERSIONS: Dict[str, List[Dict[str, Any]]] = {
+    "PDF": [
+        {"id": "pdf_to_text_bundle", "label": "Convert to Text (Hybrid OCR)", "targets": ["TXT", "HTML", "MD", "ZIP"]},
+        {"id": "pdf_to_word", "label": "Convert to Word (Editable Text)", "targets": ["DOCX"]},
+        {"id": "pdf_tables_to_data", "label": "Extract Tables to Spreadsheet", "targets": ["XLSX", "CSV", "JSON", "ZIP"]},
+        {"id": "pdf_to_images", "label": "Convert Pages to Images", "targets": ["ZIP(PNG)"]},
+        {"id": "pdf_metadata", "label": "Extract PDF Metadata", "targets": ["JSON"]},
+        {"id": "pdf_searchable_optional", "label": "Make Searchable PDF (OCR Layer) (Optional)", "targets": ["PDF(Searchable)"]},
+    ],
+    "IMAGE": [
+        {"id": "img_to_text", "label": "Convert to Text (OCR)", "targets": ["TXT"]},
+        {"id": "img_tables_to_data", "label": "Extract Tables to Spreadsheet", "targets": ["XLSX", "CSV", "JSON", "ZIP"]},
+        {"id": "img_to_pdf", "label": "Convert to PDF (Image only)", "targets": ["PDF"]},
+        {"id": "img_to_pdf_ocr_text", "label": "Convert to PDF (Readable Text via OCR)", "targets": ["PDF(Text)"]},
+    ],
+    "EXCEL": [
+        {"id": "xlsx_to_bundle", "label": "Convert Excel to Other Formats (Bundle)", "targets": ["ZIP", "PDF", "DOCX", "CSV", "JSON", "HTML", "MD"]},
+        {"id": "xlsx_to_pdf", "label": "Convert Excel to PDF", "targets": ["PDF"]},
+        {"id": "xlsx_to_word", "label": "Convert Excel to Word", "targets": ["DOCX"]},
+    ],
+    "WORD": [
+        {"id": "docx_to_text_bundle", "label": "Convert Word to Text / Web Formats (Bundle)", "targets": ["ZIP", "TXT", "HTML", "MD", "PDF(Text)"]},
+        {"id": "docx_to_excel", "label": "Convert Word Tables to Excel", "targets": ["XLSX"]},
+    ],
+    "PPT": [
+        {"id": "pptx_to_bundle", "label": "Convert PowerPoint to Text / Data (Bundle)", "targets": ["ZIP", "TXT", "JSON", "PDF(Text)", "Images(embedded)"]},
+    ],
+}
 
-with tab_convert:
-    left, right = st.columns([1, 1], gap="large")
+available = CONVERSIONS.get(kind, [])
 
-    with left:
-        st.subheader("Preview")
-        if is_image(filename):
-            try:
-                im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-                st.image(im, use_container_width=True)
-            except Exception:
-                st.info("Image preview not available.")
-        else:
-            st.info("Preview is available for OCR/PDF render tasks when 'Show preview' is enabled.")
+with right:
+    st.markdown("<div class='card'><h4 style='margin:0 0 10px 0;'>2) Choose conversion</h4>", unsafe_allow_html=True)
 
-    with right:
-        st.subheader("Convert")
-        task = st.selectbox("Choose conversion", valid_tasks, index=0)
-        run = st.button("Run conversion", type="primary")
+    if not available:
+        st.error("This file type is not supported.")
+        st.stop()
 
-        if not run:
-            st.stop()
+    # Conversion dropdown
+    conv_id = st.selectbox(
+        "What do you want to do?",
+        options=[c["id"] for c in available],
+        format_func=lambda cid: next(x["label"] for x in available if x["id"] == cid),
+    )
+    chosen = next(x for x in available if x["id"] == conv_id)
 
-        outputs: Dict[str, bytes] = {}
-        output_names: List[str] = []
+    # Target dropdown (for professional feel)
+    target = st.selectbox("Convert to", options=chosen["targets"])
 
-        # -------------------------
-        # PDF tasks
-        # -------------------------
-        if task == "PDF → Metadata → JSON":
-            md = pdf_metadata_to_dict(file_bytes)
-            b = json.dumps(md, ensure_ascii=False, indent=2).encode("utf-8")
-            outputs[f"{base_name}_metadata.json"] = b
-            st.json(md)
+    st.caption("3) Click Convert — downloads will appear below.")
+    run = st.button("Convert", type="primary")
 
-        elif task == "PDF → Images (PNG) → ZIP":
-            zip_bytes, count = pdf_to_images_zip(file_bytes, max_pages=max_pages, dpi=220)
-            outputs[f"{base_name}_pages_{now_file_stamp()}.zip"] = zip_bytes
-            st.success(f"Rendered {count} pages into PNG files (zipped).")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-        elif task == "PDF → Text (Hybrid) → TXT/HTML/Markdown/ZIP":
+if not run:
+    st.stop()
+
+# ============================================================
+# Conversion execution (logic untouched; UI orchestrates)
+# ============================================================
+outputs: Dict[str, bytes] = {}
+task_label = next(x["label"] for x in available if x["id"] == conv_id)
+
+with st.spinner("Converting..."):
+    try:
+        # ---------------- PDF ----------------
+        if conv_id == "pdf_to_text_bundle":
             pages = pdf_hybrid_text_extract(file_bytes, max_pages=max_pages, lang=ocr_lang, dpi=ocr_dpi)
-
-            if show_preview:
-                try:
-                    imgs = pdf_render_pages_to_images(file_bytes, dpi=ocr_dpi, max_pages=1)
-                    if imgs:
-                        disp = to_displayable_image(imgs[0])
-                        if disp is not None:
-                            st.image(disp, caption="First page rendered", use_container_width=True)
-                except Exception:
-                    pass
-
             txt = "\n\n".join([f"--- Page {i+1} ---\n{p}".strip() for i, p in enumerate(pages)]).strip() + "\n"
             html = "\n".join(
-                [f"<h2>Page {i+1}</h2>\n<pre>{(p or '').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')}</pre>" for i, p in enumerate(pages)]
+                [f"<h2>Page {i+1}</h2>\n<pre>{(p or '').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')}</pre>"
+                 for i, p in enumerate(pages)]
             )
             try:
                 from markdownify import markdownify as mdify
@@ -764,26 +861,27 @@ with tab_convert:
             except Exception:
                 md = txt
 
-            files = {
-                "text/output.txt": txt.encode("utf-8"),
-                "text/output.html": html.encode("utf-8"),
-                "text/output.md": (md or "").encode("utf-8"),
-                "text/manifest.json": json.dumps({"type": "pdf_hybrid_text", "pages": len(pages), "created": now_stamp()}, indent=2).encode("utf-8"),
-            }
-            z = build_zip(files)
-            outputs[f"{base_name}_text_{now_file_stamp()}.zip"] = z
-            outputs[f"{base_name}.txt"] = files["text/output.txt"]
-            outputs[f"{base_name}.html"] = files["text/output.html"]
-            outputs[f"{base_name}.md"] = files["text/output.md"]
-            st.text_area("Preview (first 1500 chars)", txt[:1500], height=260)
+            if target == "TXT":
+                outputs[f"{base_name}.txt"] = txt.encode("utf-8")
+            elif target == "HTML":
+                outputs[f"{base_name}.html"] = html.encode("utf-8")
+            elif target == "MD":
+                outputs[f"{base_name}.md"] = (md or "").encode("utf-8")
+            else:  # ZIP
+                files = {
+                    "text/output.txt": txt.encode("utf-8"),
+                    "text/output.html": html.encode("utf-8"),
+                    "text/output.md": (md or "").encode("utf-8"),
+                    "text/manifest.json": json.dumps({"type": "pdf_hybrid_text", "pages": len(pages), "created": now_stamp()}, indent=2).encode("utf-8"),
+                }
+                outputs[f"{base_name}_text_{now_file_stamp()}.zip"] = build_zip(files)
 
-        elif task == "PDF → Word (Hybrid) → DOCX":
+        elif conv_id == "pdf_to_word":
             from docx import Document
-
             pages = pdf_hybrid_text_extract(file_bytes, max_pages=max_pages, lang=ocr_lang, dpi=ocr_dpi)
 
             doc = Document()
-            doc.add_heading("Hybrid Extracted Text (PDF)", level=1)
+            doc.add_heading("PDF to Word (Hybrid OCR)", level=1)
             doc.add_paragraph(f"Source: {filename}")
             doc.add_paragraph(f"Created: {now_stamp()}")
             doc.add_paragraph("")
@@ -793,103 +891,29 @@ with tab_convert:
                 for line in (p or "").splitlines():
                     doc.add_paragraph(line)
 
-            out = io.BytesIO()
-            doc.save(out)
-            outputs[f"{base_name}_hybrid.docx"] = out.getvalue()
-            st.success("DOCX created (editable text).")
+            buf = io.BytesIO()
+            doc.save(buf)
+            outputs[f"{base_name}.docx"] = buf.getvalue()
 
-        elif task == "PDF → Tables → Export (Excel/CSV/JSON/ZIP)":
+        elif conv_id == "pdf_tables_to_data":
             tables_dfs: List[pd.DataFrame] = []
 
             if prefer_text_layer_tables:
-                with st.spinner("Trying PDF text-layer table extraction..."):
-                    try:
-                        tables_dfs = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
-                    except Exception:
-                        tables_dfs = []
+                try:
+                    tables_dfs = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
+                except Exception:
+                    tables_dfs = []
 
             if not tables_dfs:
-                with st.spinner("Falling back to OCR table extraction (img2table + Tesseract)..."):
-                    from img2table.ocr import TesseractOCR
-                    from img2table.document import PDF as Img2TablePDF
+                from img2table.ocr import TesseractOCR
+                from img2table.document import PDF as Img2TablePDF
 
-                    ocr = TesseractOCR(lang=ocr_lang)
-
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
-                        f.write(file_bytes)
-                        path = f.name
-                    try:
-                        doc = Img2TablePDF(path)
-                        tables_obj = doc.extract_tables(
-                            ocr=ocr,
-                            borderless_tables=True,
-                            implicit_rows=True,
-                            min_confidence=min_conf,
-                        )
-                    finally:
-                        try:
-                            os.remove(path)
-                        except Exception:
-                            pass
-
-                    for t in flatten_img2table_tables(tables_obj):
-                        df = table_to_df_safe(t)
-                        if df is not None:
-                            tables_dfs.append(df)
-
-            if not tables_dfs:
-                st.error("No tables extracted.")
-                st.stop()
-
-            st.success(f"Extracted {len(tables_dfs)} table(s). Preview Table 1:")
-            st.dataframe(tables_dfs[0].applymap(normalizer), use_container_width=True)
-
-            root = f"{base_name}_tables_{now_file_stamp()}"
-            files = build_tables_bundle(tables_dfs, normalizer, base_root=root)
-            z = build_zip(files)
-            outputs[f"{root}.zip"] = z
-            outputs[f"{root}.xlsx"] = files[f"{root}.xlsx"]
-
-        elif task == "PDF → Smart Search PDF (OCR layer) (optional)":
-            if not ocrmypdf_available():
-                st.warning("Not available. Add `ocrmypdf` to requirements.txt and `ghostscript`, `qpdf` to packages.txt.")
-                st.stop()
-
-            with st.spinner("Creating searchable PDF (OCR layer)..."):
-                out_pdf = make_searchable_pdf(file_bytes, lang=ocr_lang)
-
-            outputs[f"{base_name}_searchable.pdf"] = out_pdf
-            st.success("Searchable PDF created.")
-
-        # -------------------------
-        # Image tasks
-        # -------------------------
-        elif task == "Image → OCR Text → TXT":
-            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            with st.spinner("Running OCR on image..."):
-                text = ocr_image_to_text(im, lang=ocr_lang)
-
-            outputs[f"{base_name}.txt"] = (text or "").encode("utf-8")
-            st.text_area("OCR Text", text or "(No text extracted)", height=280)
-
-        elif task == "Image → PDF":
-            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            buf = io.BytesIO()
-            im.save(buf, format="PDF")
-            outputs[f"{base_name}.pdf"] = buf.getvalue()
-            st.success("Converted image to PDF.")
-
-        elif task == "Image → Tables → Export (Excel/CSV/JSON/ZIP)":
-            from img2table.ocr import TesseractOCR
-            from img2table.document import Image as Img2TableImage
-
-            with st.spinner("Extracting tables from image (img2table + Tesseract)..."):
                 ocr = TesseractOCR(lang=ocr_lang)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
                     f.write(file_bytes)
                     path = f.name
                 try:
-                    doc = Img2TableImage(path)
+                    doc = Img2TablePDF(path)
                     tables_obj = doc.extract_tables(
                         ocr=ocr,
                         borderless_tables=True,
@@ -902,135 +926,228 @@ with tab_convert:
                     except Exception:
                         pass
 
-                tables_dfs = []
                 for t in flatten_img2table_tables(tables_obj):
                     df = table_to_df_safe(t)
                     if df is not None:
                         tables_dfs.append(df)
 
             if not tables_dfs:
-                st.error("No tables extracted from image.")
-                st.stop()
-
-            st.success(f"Extracted {len(tables_dfs)} table(s). Preview Table 1:")
-            st.dataframe(tables_dfs[0].applymap(normalizer), use_container_width=True)
+                raise RuntimeError("No tables could be extracted from this PDF.")
 
             root = f"{base_name}_tables_{now_file_stamp()}"
-            files = build_tables_bundle(tables_dfs, normalizer, base_root=root)
-            z = build_zip(files)
-            outputs[f"{root}.zip"] = z
+            bundle = build_tables_bundle(tables_dfs, normalizer, base_root=root)
 
-        # -------------------------
-        # DOCX task
-        # -------------------------
-        elif task == "DOCX → TXT/HTML/Markdown/PDF(text-only)/ZIP":
+            if target == "XLSX":
+                outputs[f"{root}.xlsx"] = bundle[f"{root}.xlsx"]
+            elif target == "CSV":
+                outputs[f"{root}_combined.csv"] = bundle[f"{root}/tables/combined.csv"]
+            elif target == "JSON":
+                outputs[f"{root}_combined.json"] = bundle[f"{root}/tables/combined.json"]
+            else:  # ZIP
+                outputs[f"{root}.zip"] = build_zip(bundle)
+
+        elif conv_id == "pdf_to_images":
+            zip_bytes, count = pdf_to_images_zip(file_bytes, max_pages=max_pages, dpi=220)
+            outputs[f"{base_name}_pages_{now_file_stamp()}.zip"] = zip_bytes
+
+        elif conv_id == "pdf_metadata":
+            md = pdf_metadata_to_dict(file_bytes)
+            outputs[f"{base_name}_metadata.json"] = json.dumps(md, ensure_ascii=False, indent=2).encode("utf-8")
+
+        elif conv_id == "pdf_searchable_optional":
+            if not ocrmypdf_available():
+                raise RuntimeError("Searchable PDF not available. Install ocrmypdf + system packages ghostscript & qpdf.")
+            out_pdf = make_searchable_pdf_from_pdf(file_bytes, lang=ocr_lang)
+            outputs[f"{base_name}_searchable.pdf"] = out_pdf
+
+        # ---------------- IMAGE ----------------
+        elif conv_id == "img_to_text":
+            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            text = ocr_image_to_text(im, lang=ocr_lang)
+            outputs[f"{base_name}.txt"] = (text or "").encode("utf-8")
+
+        elif conv_id == "img_tables_to_data":
+            from img2table.ocr import TesseractOCR
+            from img2table.document import Image as Img2TableImage
+
+            ocr = TesseractOCR(lang=ocr_lang)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f:
+                f.write(file_bytes)
+                path = f.name
+            try:
+                doc = Img2TableImage(path)
+                tables_obj = doc.extract_tables(
+                    ocr=ocr,
+                    borderless_tables=True,
+                    implicit_rows=True,
+                    min_confidence=min_conf,
+                )
+            finally:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+            tables_dfs = []
+            for t in flatten_img2table_tables(tables_obj):
+                df = table_to_df_safe(t)
+                if df is not None:
+                    tables_dfs.append(df)
+
+            if not tables_dfs:
+                raise RuntimeError("No tables could be extracted from this image.")
+
+            root = f"{base_name}_tables_{now_file_stamp()}"
+            bundle = build_tables_bundle(tables_dfs, normalizer, base_root=root)
+
+            if target == "XLSX":
+                outputs[f"{root}.xlsx"] = bundle[f"{root}.xlsx"]
+            elif target == "CSV":
+                outputs[f"{root}_combined.csv"] = bundle[f"{root}/tables/combined.csv"]
+            elif target == "JSON":
+                outputs[f"{root}_combined.json"] = bundle[f"{root}/tables/combined.json"]
+            else:
+                outputs[f"{root}.zip"] = build_zip(bundle)
+
+        elif conv_id == "img_to_pdf":
+            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PDF")
+            outputs[f"{base_name}.pdf"] = buf.getvalue()
+
+        elif conv_id == "img_to_pdf_ocr_text":
+            outputs[f"{base_name}_ocr_text.pdf"] = image_to_ocr_text_pdf(file_bytes, lang=ocr_lang)
+
+        # ---------------- EXCEL ----------------
+        elif conv_id == "xlsx_to_bundle":
+            bundle = xlsx_to_outputs_bundle(file_bytes)
+
+            # Choose a single output or bundle
+            if target == "PDF":
+                outputs[f"{base_name}.pdf"] = bundle["excel/output.pdf"]
+            elif target == "DOCX":
+                outputs[f"{base_name}.docx"] = bundle["excel/output.docx"]
+            elif target == "CSV":
+                # Provide combined zip-like CSV output (per sheet needs zip; here give zip)
+                outputs[f"{base_name}_excel_csv_{now_file_stamp()}.zip"] = build_zip({k: v for k, v in bundle.items() if k.endswith(".csv") or k.endswith("manifest.json")})
+            elif target == "JSON":
+                outputs[f"{base_name}_excel.json"] = bundle["excel/combined.json"]
+            elif target == "HTML":
+                outputs[f"{base_name}_excel_html_{now_file_stamp()}.zip"] = build_zip({k: v for k, v in bundle.items() if k.endswith(".html") or k.endswith("manifest.json")})
+            elif target == "MD":
+                outputs[f"{base_name}_excel_md_{now_file_stamp()}.zip"] = build_zip({k: v for k, v in bundle.items() if k.endswith(".md") or k.endswith("manifest.json")})
+            else:  # ZIP
+                outputs[f"{base_name}_excel_bundle_{now_file_stamp()}.zip"] = build_zip(bundle)
+
+        elif conv_id == "xlsx_to_pdf":
+            outputs[f"{base_name}.pdf"] = excel_to_pdf_bytes(file_bytes)
+
+        elif conv_id == "xlsx_to_word":
+            outputs[f"{base_name}.docx"] = excel_to_word_docx(file_bytes)
+
+        # ---------------- WORD ----------------
+        elif conv_id == "docx_to_text_bundle":
             text, html, md = docx_to_text_html_md(file_bytes)
-            pdf_bytes = text_to_pdf_bytes(f"DOCX Export: {base_name}", text)
+            pdf_bytes = text_to_pdf_bytes(f"Word Text Export: {base_name}", text)
 
-            files = {
-                "docx/output.txt": (text or "").encode("utf-8"),
-                "docx/output.html": (html or "").encode("utf-8"),
-                "docx/output.md": (md or "").encode("utf-8"),
-                "docx/output.pdf": pdf_bytes,
-                "docx/manifest.json": json.dumps({"type": "docx_export", "created": now_stamp()}, indent=2).encode("utf-8"),
-            }
-            z = build_zip(files)
-            outputs[f"{base_name}_docx_{now_file_stamp()}.zip"] = z
-            st.text_area("Preview (text)", (text or "")[:1500], height=260)
+            if target == "TXT":
+                outputs[f"{base_name}.txt"] = (text or "").encode("utf-8")
+            elif target == "HTML":
+                outputs[f"{base_name}.html"] = (html or "").encode("utf-8")
+            elif target == "MD":
+                outputs[f"{base_name}.md"] = (md or "").encode("utf-8")
+            elif target == "PDF(Text)":
+                outputs[f"{base_name}.pdf"] = pdf_bytes
+            else:  # ZIP
+                files = {
+                    "word/output.txt": (text or "").encode("utf-8"),
+                    "word/output.html": (html or "").encode("utf-8"),
+                    "word/output.md": (md or "").encode("utf-8"),
+                    "word/output.pdf": pdf_bytes,
+                    "word/manifest.json": json.dumps({"type": "word_bundle", "created": now_stamp()}, indent=2).encode("utf-8"),
+                }
+                outputs[f"{base_name}_word_bundle_{now_file_stamp()}.zip"] = build_zip(files)
 
-        # -------------------------
-        # XLSX task (NEW includes Excel -> PDF)
-        # -------------------------
-        elif task == "XLSX → CSV/JSON/HTML/Markdown/PDF/ZIP":
-            with st.spinner("Exporting Excel sheets + generating PDF..."):
-                files = xlsx_to_outputs(file_bytes)
-                z = build_zip(files)
+        elif conv_id == "docx_to_excel":
+            outputs[f"{base_name}_tables.xlsx"] = word_to_excel_tables(file_bytes)
 
-            outputs[f"{base_name}_excel_{now_file_stamp()}.zip"] = z
-            outputs[f"{base_name}.pdf"] = files["excel/output.pdf"]
-            st.success("Excel exported: CSV/JSON/HTML/MD per sheet + combined JSON + PDF.")
-
-        # -------------------------
-        # PPTX task
-        # -------------------------
-        elif task == "PPTX → TXT/JSON/Images/PDF(text-only)/ZIP":
-            with st.spinner("Extracting PPTX text + embedded images..."):
-                files = pptx_to_text_json_images(file_bytes)
-
-            slides_text = files.get("pptx/slides.txt", b"").decode("utf-8", errors="ignore")
-            files["pptx/slides.pdf"] = text_to_pdf_bytes(f"PPTX Export: {base_name}", slides_text)
-
-            z = build_zip(files)
-            outputs[f"{base_name}_pptx_{now_file_stamp()}.zip"] = z
-            st.success("PPTX exported: TXT + JSON + embedded images + text-only PDF.")
+        # ---------------- PPT ----------------
+        elif conv_id == "pptx_to_bundle":
+            bundle = pptx_to_text_json_images(file_bytes)
+            outputs[f"{base_name}_ppt_bundle_{now_file_stamp()}.zip"] = build_zip(bundle)
 
         else:
-            st.error("Task not supported for this file type.")
-            st.stop()
-
-        # Save outputs into session_state for "Last Outputs"
-        st.session_state.last_outputs = outputs
-
-        output_names = list(outputs.keys())
-
-        # Add history
-        add_history({
-            "time": now_stamp(),
-            "task": task,
-            "input_name": filename,
-            "outputs": output_names,
-        })
-
-        # Show download buttons
-        st.markdown('<hr class="hr">', unsafe_allow_html=True)
-        st.subheader("Downloads")
-        for out_name, out_bytes in outputs.items():
-            mime = "application/octet-stream"
-            lname = out_name.lower()
-            if lname.endswith(".zip"):
-                mime = "application/zip"
-            elif lname.endswith(".pdf"):
-                mime = "application/pdf"
-            elif lname.endswith(".docx"):
-                mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            elif lname.endswith(".pptx"):
-                mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            elif lname.endswith(".xlsx"):
-                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            elif lname.endswith(".csv"):
-                mime = "text/csv"
-            elif lname.endswith(".json"):
-                mime = "application/json"
-            elif lname.endswith(".txt"):
-                mime = "text/plain"
-            elif lname.endswith(".html"):
-                mime = "text/html"
-            elif lname.endswith(".md"):
-                mime = "text/markdown"
-
-            st.download_button(
-                label=f"Download {out_name}",
-                data=out_bytes,
-                file_name=out_name,
-                mime=mime,
-                key=f"dl_{out_name}_{now_file_stamp()}",
-            )
+            raise RuntimeError("Conversion not implemented.")
+    except Exception as e:
+        st.error(f"Conversion failed: {e}")
+        st.stop()
 
 
-with tab_outputs:
-    st.subheader("📦 Last Outputs")
-    if not st.session_state.last_outputs:
-        st.info("Run a conversion to see outputs here.")
-    else:
-        st.markdown("<div class='small-muted'>These are stored in the current session only.</div>", unsafe_allow_html=True)
-        for out_name, out_bytes in st.session_state.last_outputs.items():
-            st.write(f"- `{out_name}` • {len(out_bytes)} bytes")
+# Save outputs to session + history
+st.session_state.last_outputs = outputs
+add_history({
+    "time": now_stamp(),
+    "input": filename,
+    "task": task_label,
+    "outputs": list(outputs.keys())
+})
 
+# ============================================================
+# Step 4: Downloads (professional)
+# ============================================================
+st.markdown('<hr class="divider">', unsafe_allow_html=True)
+st.markdown("### ✅ Done. Download your files")
 
-with tab_history:
-    st.subheader("🕘 Conversion History")
-    if not st.session_state.history:
-        st.info("No history yet.")
-    else:
-        df = pd.DataFrame(st.session_state.history)
-        st.dataframe(df, use_container_width=True)
+if not outputs:
+    st.warning("No outputs produced.")
+    st.stop()
+
+# Show a compact summary + download buttons
+sum_left, sum_right = st.columns([1.2, 0.8], gap="large")
+with sum_left:
+    st.markdown("<div class='card'><h4 style='margin:0 0 6px 0;'>Summary</h4>", unsafe_allow_html=True)
+    st.markdown(f"- **Input:** `{filename}`")
+    st.markdown(f"- **Action:** **{task_label}**")
+    st.markdown(f"- **Generated:** {len(outputs)} file(s)")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with sum_right:
+    st.markdown("<div class='card'><h4 style='margin:0 0 10px 0;'>Downloads</h4>", unsafe_allow_html=True)
+    for out_name, out_bytes in outputs.items():
+        lname = out_name.lower()
+        mime = "application/octet-stream"
+        if lname.endswith(".zip"):
+            mime = "application/zip"
+        elif lname.endswith(".pdf"):
+            mime = "application/pdf"
+        elif lname.endswith(".docx"):
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif lname.endswith(".pptx"):
+            mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        elif lname.endswith(".xlsx"):
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif lname.endswith(".csv"):
+            mime = "text/csv"
+        elif lname.endswith(".json"):
+            mime = "application/json"
+        elif lname.endswith(".txt"):
+            mime = "text/plain"
+        elif lname.endswith(".html"):
+            mime = "text/html"
+        elif lname.endswith(".md"):
+            mime = "text/markdown"
+
+        st.download_button(
+            label=f"Download {out_name}",
+            data=out_bytes,
+            file_name=out_name,
+            mime=mime,
+            key=f"dl_{out_name}_{now_file_stamp()}",
+            use_container_width=True
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Optional: quick “Last outputs” panel
+with st.expander("View output list", expanded=False):
+    for out_name, out_bytes in outputs.items():
+        st.write(f"- `{out_name}` • {len(out_bytes)} bytes")
