@@ -3,7 +3,8 @@ pandas==2.2.3
 openpyxl==3.1.2
 Pillow==10.2.0
 
-opencv-python-headless==4.10.0.84
+opencv-contrib-python-headless==4.10.0.84
+
 img2table==1.2.11
 pytesseract==0.3.10
 pdf2image==1.17.0
