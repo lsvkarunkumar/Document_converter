@@ -1,19 +1,27 @@
 import os
 import re
+import json
+import zipfile
 import tempfile
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import streamlit as st
 import pandas as pd
 from PIL import Image
 
 
+# =============================
+# App config
+# =============================
 st.set_page_config(page_title="Document Converter", layout="wide")
 st.title("📎 Document Converter (PDF/Image → Excel/Word/PPT/PDF)")
-st.caption("Text PDFs convert directly. Scanned/image PDFs need OCR to become editable text.")
+st.caption("Now includes: Excel + CSV + JSON + ZIP bundle outputs for extracted tables.")
 
 
+# =============================
+# Helpers: file types
+# =============================
 def is_pdf(name: str) -> bool:
     return name.lower().endswith(".pdf")
 
@@ -22,38 +30,37 @@ def is_image(name: str) -> bool:
     return name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
 
 
+# =============================
+# Display helper (safe)
+# =============================
 def to_displayable_image(obj):
     """
     Convert various image-like objects to something Streamlit can display reliably.
-    Returns either a PIL Image or a numpy array.
+    Returns either a PIL Image or a numpy array; or None if not possible.
     """
     try:
-        # If it's already a PIL Image
         if isinstance(obj, Image.Image):
-            return obj
+            return obj.convert("RGB")
     except Exception:
         pass
 
-    # Try converting via PIL if possible
     try:
-        im = obj.convert("RGB")  # some objects behave like PIL
+        im = obj.convert("RGB")
         if isinstance(im, Image.Image):
             return im
     except Exception:
         pass
 
-    # Last resort: numpy array conversion
     try:
         import numpy as np
-
-        if isinstance(obj, Image.Image):
-            return np.array(obj.convert("RGB"))
-        # Some objects can be directly array-converted
         return np.array(obj)
     except Exception:
         return None
 
 
+# =============================
+# img2table output normalization
+# =============================
 def flatten_img2table_tables(tables_obj) -> List:
     if tables_obj is None:
         return []
@@ -83,6 +90,9 @@ def table_to_df_safe(table) -> Optional[pd.DataFrame]:
     return None
 
 
+# =============================
+# Text cleanup: RAW vs CLEAN
+# =============================
 def _collapse_spaces(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
@@ -97,32 +107,51 @@ def normalize_cell_text_raw(val):
 
 
 def normalize_cell_text_clean(val):
+    """
+    Strong cleaning for OCR/table text:
+    - joins spaced letters/digits: "G B" -> "GB", "1 1 9 6" -> "1196"
+    - fixes split-words like "s tandard" -> "standard"
+    - converts newlines to spaces for Excel-friendly output
+    - cleans spaces around punctuation
+    """
     if val is None:
         return val
     s = str(val)
 
+    # normalize line breaks -> spaces
     s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = re.sub(r"\n+", "\n", s).replace("\n", " ")
     s = s.replace("\u00a0", " ")
     s = _collapse_spaces(s)
 
+    # remove leading junk
     s = re.sub(r"^\|\s*", "", s)
 
+    # join spaced letters (>=4 single-letter tokens)
     def join_spaced_letters(m):
         return m.group(0).replace(" ", "")
 
     s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
+
+    # join spaced digits (>=4 digits)
     s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
 
+    # fix split-words like "s tandard" -> "standard"
     for _ in range(2):
         s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
 
+    # clean punctuation spacing
     s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
+
+    # GB code spacing: "GB/T1196" -> "GB/T 1196"
     s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
 
     return _collapse_spaces(s)
 
 
+# =============================
+# PDF text-layer table extraction (cleaner for text PDFs)
+# =============================
 def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int = 20) -> List[pd.DataFrame]:
     import pdfplumber
     dfs: List[pd.DataFrame] = []
@@ -137,16 +166,131 @@ def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int = 20) -> List[
     return dfs
 
 
+# =============================
+# Export helpers: CSV/JSON/ZIP
+# =============================
+def df_to_json_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Convert DF to list-of-dicts in a stable way, forcing string keys.
+    Handles duplicate/None headers by auto-naming columns.
+    """
+    df2 = df.copy()
+
+    # Fix empty/None column names
+    cols = []
+    for i, c in enumerate(df2.columns):
+        name = str(c).strip() if c is not None else ""
+        if not name or name.lower() in {"nan", "none"}:
+            name = f"col_{i+1}"
+        cols.append(name)
+    df2.columns = cols
+
+    # If duplicate column names exist, make them unique
+    seen = {}
+    new_cols = []
+    for c in df2.columns:
+        if c not in seen:
+            seen[c] = 1
+            new_cols.append(c)
+        else:
+            seen[c] += 1
+            new_cols.append(f"{c}_{seen[c]}")
+    df2.columns = new_cols
+
+    # Replace NaN with None for JSON
+    df2 = df2.where(pd.notnull(df2), None)
+
+    return df2.to_dict(orient="records")
+
+
+def build_tables_bundle(
+    tables: List[pd.DataFrame],
+    normalizer,
+    base_name: str = "tables",
+) -> Dict[str, bytes]:
+    """
+    Returns a dict of filename -> bytes for:
+    - Excel (multi-sheet)
+    - CSV per table + combined CSV
+    - JSON per table + combined JSON
+    - manifest.json
+    """
+    from openpyxl.styles import Alignment
+
+    files: Dict[str, bytes] = {}
+    cleaned = [df.applymap(normalizer) for df in tables]
+
+    # ---- Excel (multi-sheet)
+    excel_buf = BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        for i, df in enumerate(cleaned, start=1):
+            df.to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False)
+
+        wb = writer.book
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.alignment = Alignment(wrap_text=False, vertical="top")
+
+    files[f"{base_name}.xlsx"] = excel_buf.getvalue()
+
+    # ---- CSV per table + combined
+    combined_csv_parts = []
+    for i, df in enumerate(cleaned, start=1):
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        files[f"{base_name}_table_{i}.csv"] = csv_bytes
+
+        combined_csv_parts.append(f"# --- Table {i} ---\n")
+        combined_csv_parts.append(df.to_csv(index=False))
+
+    files[f"{base_name}_combined.csv"] = "".join(combined_csv_parts).encode("utf-8")
+
+    # ---- JSON per table + combined
+    combined_json = {"tables": []}
+    for i, df in enumerate(cleaned, start=1):
+        records = df_to_json_records(df)
+        table_json = {
+            "table_index": i,
+            "rows": records,
+        }
+        files[f"{base_name}_table_{i}.json"] = json.dumps(table_json, ensure_ascii=False, indent=2).encode("utf-8")
+        combined_json["tables"].append(table_json)
+
+    files[f"{base_name}_combined.json"] = json.dumps(combined_json, ensure_ascii=False, indent=2).encode("utf-8")
+
+    # ---- Manifest
+    manifest = {
+        "bundle_type": "tables_export",
+        "table_count": len(cleaned),
+        "files": sorted(list(files.keys())),
+        "notes": "Excel contains one sheet per table. CSV/JSON have per-table and combined exports.",
+    }
+    files[f"{base_name}_manifest.json"] = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+
+    return files
+
+
+def build_zip(files: Dict[str, bytes], zip_name: str = "bundle.zip") -> bytes:
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        for fname, data in files.items():
+            z.writestr(fname, data)
+    return buf.getvalue()
+
+
+# =============================
+# Sidebar
+# =============================
 with st.sidebar:
     st.header("Controls")
 
     task = st.selectbox(
         "Task",
         [
-            "PDF/Image → Tables → Excel (.xlsx)",
+            "PDF/Image → Tables → Export (Excel/CSV/JSON/ZIP)",
             "PDF → Word (.docx) (text-based PDF)",
             "Scanned PDF (image) → Word (.docx) (OCR editable text)",
-            "PDF → PPT (.pptx)",
+            "PDF → PPT (.pptx) (text-based)",
             "Image → PDF",
             "Extract Text (OCR) → TXT",
         ],
@@ -154,7 +298,7 @@ with st.sidebar:
     )
 
     output_mode = st.selectbox(
-        "Output mode (Tables → Excel)",
+        "Table output mode",
         ["Clean (recommended)", "Raw (as extracted)"],
         index=0,
     )
@@ -167,7 +311,7 @@ with st.sidebar:
     show_ocr_preview = st.checkbox(
         "Show OCR preview image (first page)",
         value=False,
-        help="Turn ON if you want to see first rendered page. If OFF, avoids image display errors and is faster.",
+        help="OFF avoids Streamlit image display issues and is faster.",
     )
 
     ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
@@ -193,9 +337,9 @@ with left:
             im = Image.open(BytesIO(file_bytes)).convert("RGB")
             left.image(im, caption="Uploaded image", use_container_width=True)
         except Exception:
-            st.warning("Could not preview image.")
+            left.warning("Could not preview image.")
     else:
-        st.info("PDF uploaded. Preview shown only if OCR preview is enabled.")
+        left.info("PDF uploaded. Preview shown only if OCR preview is enabled.")
 
 if not run:
     st.stop()
@@ -204,9 +348,9 @@ with right:
     st.subheader("Output")
 
 
-# -----------------------------
-# Image -> PDF
-# -----------------------------
+# =============================
+# Task: Image -> PDF
+# =============================
 if task == "Image → PDF":
     if not is_image(filename):
         st.error("Please upload an image for Image → PDF.")
@@ -221,9 +365,9 @@ if task == "Image → PDF":
     st.stop()
 
 
-# -----------------------------
-# OCR -> TXT
-# -----------------------------
+# =============================
+# Task: OCR -> TXT
+# =============================
 if task == "Extract Text (OCR) → TXT":
     import pytesseract
 
@@ -238,7 +382,7 @@ if task == "Extract Text (OCR) → TXT":
             if disp is not None:
                 left.image(disp, caption="First page rendered (OCR)", use_container_width=True)
             else:
-                left.warning("Could not preview rendered page (but OCR will still work).")
+                left.warning("Could not preview rendered page (OCR will still work).")
 
         parts = []
         with st.spinner("Running OCR..."):
@@ -253,6 +397,7 @@ if task == "Extract Text (OCR) → TXT":
         st.stop()
 
     else:
+        import pytesseract
         img = Image.open(BytesIO(file_bytes)).convert("RGB")
         with st.spinner("Running OCR on image..."):
             text = pytesseract.image_to_string(img, lang=ocr_lang).strip() or "(No text extracted)"
@@ -261,15 +406,14 @@ if task == "Extract Text (OCR) → TXT":
         st.stop()
 
 
-# -----------------------------
-# PDF/Image -> Tables -> Excel
-# -----------------------------
-if task == "PDF/Image → Tables → Excel (.xlsx)":
-    from openpyxl.styles import Alignment
-
+# =============================
+# Task: Tables -> Export Excel/CSV/JSON/ZIP
+# =============================
+if task == "PDF/Image → Tables → Export (Excel/CSV/JSON/ZIP)":
     normalizer = normalize_cell_text_clean if output_mode.startswith("Clean") else normalize_cell_text_raw
     tables_dfs: List[pd.DataFrame] = []
 
+    # 1) Try PDF text-layer tables first (for PDFs only)
     if is_pdf(filename) and prefer_text_layer:
         with st.spinner("Trying PDF text-layer table extraction (pdfplumber)..."):
             try:
@@ -277,6 +421,7 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
             except Exception:
                 tables_dfs = []
 
+    # 2) Fallback to OCR-based img2table
     if not tables_dfs:
         with st.spinner("Falling back to OCR-based table extraction (img2table + Tesseract)..."):
             from img2table.ocr import TesseractOCR
@@ -330,36 +475,53 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
                     tables_dfs.append(df)
 
     if not tables_dfs:
-        st.error("No tables could be extracted.")
+        st.error("No tables could be extracted. Try a clearer scan or adjust OCR confidence.")
         st.stop()
 
-    cleaned_dfs = [df.applymap(normalizer) for df in tables_dfs]
-    st.success(f"Extracted {len(cleaned_dfs)} table(s). Previewing Table 1:")
-    st.dataframe(cleaned_dfs[0], use_container_width=True)
+    # Preview first table (cleaned/raw)
+    preview_df = tables_dfs[0].applymap(normalizer)
+    st.success(f"Extracted {len(tables_dfs)} table(s). Previewing Table 1:")
+    st.dataframe(preview_df, use_container_width=True)
 
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        for i, df in enumerate(cleaned_dfs, start=1):
-            df.to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False)
+    # Build bundle files
+    base = "tables_export"
+    files = build_tables_bundle(tables_dfs, normalizer=normalizer, base_name=base)
 
-        wb = writer.book
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.alignment = Alignment(wrap_text=False, vertical="top")
-
+    # Individual downloads
     st.download_button(
         "Download Excel (.xlsx)",
-        out.getvalue(),
-        "tables.xlsx",
+        files[f"{base}.xlsx"],
+        f"{base}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+    st.download_button(
+        "Download Combined CSV",
+        files[f"{base}_combined.csv"],
+        f"{base}_combined.csv",
+        "text/csv",
+    )
+    st.download_button(
+        "Download Combined JSON",
+        files[f"{base}_combined.json"],
+        f"{base}_combined.json",
+        "application/json",
+    )
+
+    # ZIP download (everything)
+    zip_bytes = build_zip(files, zip_name=f"{base}.zip")
+    st.download_button(
+        "Download ZIP bundle (Excel + all CSV + all JSON + manifest)",
+        zip_bytes,
+        f"{base}.zip",
+        "application/zip",
+    )
+
     st.stop()
 
 
-# -----------------------------
-# PDF -> Word (text-based)
-# -----------------------------
+# =============================
+# Task: PDF -> Word (text-based)
+# =============================
 if task == "PDF → Word (.docx) (text-based PDF)":
     if not is_pdf(filename):
         st.error("Please upload a PDF for PDF → Word.")
@@ -400,9 +562,9 @@ if task == "PDF → Word (.docx) (text-based PDF)":
     st.stop()
 
 
-# -----------------------------
-# Scanned PDF -> Word (OCR editable text)
-# -----------------------------
+# =============================
+# Task: Scanned PDF -> Word (OCR editable text)
+# =============================
 if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
     if not is_pdf(filename):
         st.error("Please upload a PDF for OCR → Word.")
@@ -448,10 +610,10 @@ if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
     st.stop()
 
 
-# -----------------------------
-# PDF -> PPT (text layer)
-# -----------------------------
-if task == "PDF → PPT (.pptx)":
+# =============================
+# Task: PDF -> PPT (text-based)
+# =============================
+if task == "PDF → PPT (.pptx) (text-based)":
     if not is_pdf(filename):
         st.error("Please upload a PDF for PDF → PPT.")
         st.stop()
@@ -505,5 +667,6 @@ if task == "PDF → PPT (.pptx)":
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
     st.stop()
+
 
 st.error("Unknown task selected.")
