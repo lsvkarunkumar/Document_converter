@@ -2,7 +2,7 @@ import os
 import re
 import tempfile
 from io import BytesIO
-from typing import List, Tuple, Optional, Union
+from typing import List, Optional
 
 import streamlit as st
 import pandas as pd
@@ -14,78 +14,46 @@ from PIL import Image
 # -----------------------------
 st.set_page_config(page_title="Document Converter", layout="wide")
 st.title("📎 Document Converter (PDF/Image → Excel/Word/PPT/PDF)")
-st.caption("Upload a file → choose task → click Run → preview → download.")
+st.caption("Upload a file → choose task → Run → preview → download.")
 
 
 # -----------------------------
-# Text cleanup helpers
+# Helpers: file types
 # -----------------------------
-def clean_spaces(s: str) -> str:
-    s = re.sub(r"[ \t]+", " ", s)
-    return s.strip()
+def is_pdf(name: str) -> bool:
+    return name.lower().endswith(".pdf")
 
 
-def normalize_cell_text(val):
-    """
-    Fix OCR text that comes with word-by-word line breaks.
-    Converts newlines to spaces and normalizes whitespace.
-    """
-    if val is None:
-        return val
-    s = str(val)
-
-    s = s.replace("\r\n", "\n").replace("\r", "\n")
-    s = re.sub(r"\n+", "\n", s)   # collapse multiple newlines
-    s = s.replace("\n", " ")      # single line per cell
-    s = clean_spaces(s)
-    return s
+def is_image(name: str) -> bool:
+    return name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
 
 
 # -----------------------------
-# File type helpers
-# -----------------------------
-def is_pdf(filename: str) -> bool:
-    return filename.lower().endswith(".pdf")
-
-
-def is_image(filename: str) -> bool:
-    return filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
-
-
-# -----------------------------
-# img2table result normalization
+# Helpers: img2table output normalization
 # -----------------------------
 def flatten_img2table_tables(tables_obj) -> List:
     """
-    img2table can return:
+    img2table may return:
       - list[Table]
-      - dict[page_idx -> list[Table]]
-    This function returns a flat list[Table] safely.
+      - dict[page -> list[Table]]
+    Return a flat list[Table].
     """
     if tables_obj is None:
         return []
-
-    # Most common: list of Table
     if isinstance(tables_obj, list):
         return tables_obj
-
-    # Sometimes: dict of page -> list of Table
     if isinstance(tables_obj, dict):
         out = []
         for _, v in tables_obj.items():
             if isinstance(v, list):
                 out.extend(v)
         return out
-
-    # Unknown shape
     return []
 
 
 def table_to_df_safe(table) -> Optional[pd.DataFrame]:
     """
-    Table objects usually expose .df, but to be safe:
-    - If it already is a DataFrame, return it.
-    - If it has attribute df, return that.
+    Convert a table-like object to a DataFrame safely.
     """
     if table is None:
         return None
@@ -102,10 +70,65 @@ def table_to_df_safe(table) -> Optional[pd.DataFrame]:
 
 
 # -----------------------------
+# Text cleanup: RAW vs CLEAN
+# -----------------------------
+def normalize_cell_text_clean(val):
+    """
+    CLEAN mode:
+    - Fix letter-by-letter spaced text: 'D u r a t i o n' -> 'Duration'
+    - Convert newlines to spaces
+    - Collapse extra spaces
+    - Clean spacing around punctuation
+    """
+    if val is None:
+        return val
+    s = str(val)
+
+    # Normalize line breaks
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n+", "\n", s)
+    s = s.replace("\n", " ")
+
+    # Collapse repeated spaces
+    s = re.sub(r"[ \t]+", " ", s).strip()
+
+    # Join sequences of single letters separated by spaces (>=4 letters)
+    # Example: "A i r l i n e" -> "Airline"
+    def join_spaced_letters(match):
+        return match.group(0).replace(" ", "")
+
+    s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
+
+    # Join digit sequences split by spaces: "+ 9 7 4 4 4 4 9" -> "+9744449"
+    s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
+
+    # Clean spaces around punctuation
+    s = re.sub(r"\s*([,/:\-\+])\s*", r"\1", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+
+def normalize_cell_text_raw(val):
+    """
+    RAW mode:
+    - Keep text as close as possible to extracted value
+    - Only remove excessive whitespace/newlines that break Excel
+    """
+    if val is None:
+        return val
+    s = str(val)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)  # keep some structure
+    return s
+
+
+# -----------------------------
 # Sidebar controls
 # -----------------------------
 with st.sidebar:
     st.header("Controls")
+
     task = st.selectbox(
         "Task",
         [
@@ -117,8 +140,15 @@ with st.sidebar:
         ],
         index=0,
     )
+
+    output_mode = st.selectbox(
+        "Output mode (Tables → Excel)",
+        ["Clean (recommended)", "Raw (as extracted)"],
+        index=0,
+    )
+
     ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
-    max_pages = st.slider("Max pages (PDF OCR/Text)", 1, 50, 10)
+    max_pages = st.slider("Max pages (OCR/Text)", 1, 50, 10)
     min_conf = st.slider("Min OCR confidence (tables)", 0, 100, 50)
 
 uploaded = st.file_uploader("Upload PDF or Image", type=["pdf", "png", "jpg", "jpeg", "webp"])
@@ -131,9 +161,9 @@ if not uploaded:
 file_bytes = uploaded.read()
 filename = uploaded.name
 
-col1, col2 = st.columns([1, 1], gap="large")
+left, right = st.columns([1, 1], gap="large")
 
-with col1:
+with left:
     st.subheader("Input preview")
     if is_image(filename):
         try:
@@ -141,12 +171,12 @@ with col1:
         except Exception:
             st.warning("Could not preview image.")
     else:
-        st.info("PDF uploaded. Preview is generated only for OCR tasks.")
+        st.info("PDF uploaded. Preview only shown for OCR tasks.")
 
 if not run:
     st.stop()
 
-with col2:
+with right:
     st.subheader("Output")
 
 
@@ -180,18 +210,17 @@ if task == "Extract Text (OCR) → TXT":
             images = convert_from_bytes(file_bytes, dpi=220)[:max_pages]
 
         if images:
-            col1.image(images[0], caption="First page (rendered)", use_container_width=True)
+            left.image(images[0], caption="First page rendered", use_container_width=True)
 
         parts = []
         with st.spinner("Running OCR..."):
             for i, im in enumerate(images, start=1):
-                txt = pytesseract.image_to_string(im, lang=ocr_lang)
-                txt = txt.strip()
+                txt = pytesseract.image_to_string(im, lang=ocr_lang).strip()
                 if txt:
                     parts.append(f"--- Page {i} ---\n{txt}")
 
         text = "\n\n".join(parts).strip() or "(No text extracted)"
-        st.text_area("Extracted text", text, height=350)
+        st.text_area("Extracted OCR text", text, height=350)
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
 
@@ -200,7 +229,7 @@ if task == "Extract Text (OCR) → TXT":
         with st.spinner("Running OCR on image..."):
             text = pytesseract.image_to_string(img, lang=ocr_lang).strip() or "(No text extracted)"
 
-        st.text_area("Extracted text", text, height=350)
+        st.text_area("Extracted OCR text", text, height=350)
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
 
@@ -209,11 +238,13 @@ if task == "Extract Text (OCR) → TXT":
 # Task: PDF/Image -> Tables -> Excel
 # -----------------------------
 if task == "PDF/Image → Tables → Excel (.xlsx)":
-    # Lazy imports (heavy)
+    # Heavy imports here only
     from openpyxl.styles import Alignment
     from img2table.ocr import TesseractOCR
     from img2table.document import PDF as Img2TablePDF
     from img2table.document import Image as Img2TableImage
+
+    normalizer = normalize_cell_text_clean if output_mode.startswith("Clean") else normalize_cell_text_raw
 
     ocr = TesseractOCR(lang=ocr_lang)
 
@@ -259,34 +290,40 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
     tables = flatten_img2table_tables(tables_obj)
 
     if not tables:
-        st.error("No tables detected. Try a clearer scan/photo or adjust settings.")
+        st.error("No tables detected. Try a clearer scan/photo, or adjust Min OCR confidence.")
         st.stop()
 
-    # Get first table DF safely
+    # Preview table 1 safely
     first_df = table_to_df_safe(tables[0])
     if first_df is None:
-        st.error("Tables were detected but could not be converted to DataFrame (.df missing).")
+        st.error("Tables detected but could not convert to DataFrame (.df missing).")
         st.write("Debug: type(tables_obj) =", type(tables_obj))
         st.write("Debug: type(first_table) =", type(tables[0]))
         st.stop()
 
-    # Normalize cell text to avoid word-by-word newlines
-    first_df_clean = first_df.applymap(normalize_cell_text)
+    first_df_out = first_df.applymap(normalizer)
 
     st.success(f"Found {len(tables)} table(s). Previewing Table 1:")
-    st.dataframe(first_df_clean, use_container_width=True)
+    st.dataframe(first_df_out, use_container_width=True)
 
-    # Export all tables as Excel (multi-sheet), with no wrap
+    # Export all tables to Excel (multi-sheet)
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        sheet_count = 0
         for i, t in enumerate(tables, start=1):
             df = table_to_df_safe(t)
             if df is None:
                 continue
-            df = df.applymap(normalize_cell_text)
+            df = df.applymap(normalizer)
             sheet = f"Table_{i}"[:31]
             df.to_excel(writer, sheet_name=sheet, index=False)
+            sheet_count += 1
 
+        if sheet_count == 0:
+            st.error("No DataFrame tables could be exported.")
+            st.stop()
+
+        # Force no wrap in Excel
         wb = writer.book
         for ws in wb.worksheets:
             for row in ws.iter_rows():
@@ -300,13 +337,14 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    # Also provide CSV of the first table
+    # Optional: also download CSV of Table 1
     st.download_button(
         "Download Table 1 (CSV)",
-        first_df_clean.to_csv(index=False).encode("utf-8"),
+        first_df_out.to_csv(index=False).encode("utf-8"),
         "table_1.csv",
         "text/csv",
     )
+
     st.stop()
 
 
@@ -349,6 +387,7 @@ if task == "PDF → Word (.docx)":
                     os.remove(p)
             except Exception:
                 pass
+
     st.stop()
 
 
@@ -412,6 +451,7 @@ if task == "PDF → PPT (.pptx)":
         "output.pptx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
+
     st.stop()
 
 st.error("Unknown task selected.")
