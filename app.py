@@ -2,24 +2,18 @@ import os
 import re
 import tempfile
 from io import BytesIO
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import streamlit as st
 import pandas as pd
 from PIL import Image
 
 
-# -----------------------------
-# Streamlit config
-# -----------------------------
 st.set_page_config(page_title="Document Converter", layout="wide")
 st.title("📎 Document Converter (PDF/Image → Excel/Word/PPT/PDF)")
-st.caption("Upload a file → choose task → Run → preview → download.")
+st.caption("Text PDFs convert directly. Scanned/image PDFs need OCR to become editable text.")
 
 
-# -----------------------------
-# Helpers: file types
-# -----------------------------
 def is_pdf(name: str) -> bool:
     return name.lower().endswith(".pdf")
 
@@ -28,16 +22,7 @@ def is_image(name: str) -> bool:
     return name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
 
 
-# -----------------------------
-# Helpers: img2table output normalization
-# -----------------------------
 def flatten_img2table_tables(tables_obj) -> List:
-    """
-    img2table may return:
-      - list[Table]
-      - dict[page -> list[Table]]
-    Return a flat list[Table].
-    """
     if tables_obj is None:
         return []
     if isinstance(tables_obj, list):
@@ -52,9 +37,6 @@ def flatten_img2table_tables(tables_obj) -> List:
 
 
 def table_to_df_safe(table) -> Optional[pd.DataFrame]:
-    """
-    Convert a table-like object to a DataFrame safely.
-    """
     if table is None:
         return None
     if isinstance(table, pd.DataFrame):
@@ -69,15 +51,37 @@ def table_to_df_safe(table) -> Optional[pd.DataFrame]:
     return None
 
 
-# -----------------------------
-# TEXT CLEANING (important)
-# -----------------------------
 def _collapse_spaces(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
 
+def normalize_cell_text_clean(val):
+    if val is None:
+        return val
+    s = str(val)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n+", "\n", s).replace("\n", " ")
+    s = s.replace("\u00a0", " ")
+    s = _collapse_spaces(s)
+
+    s = re.sub(r"^\|\s*", "", s)
+
+    def join_spaced_letters(m):
+        return m.group(0).replace(" ", "")
+
+    s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
+    s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
+
+    for _ in range(2):
+        s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
+
+    s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
+    s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
+
+    return _collapse_spaces(s)
+
+
 def normalize_cell_text_raw(val):
-    """Minimal cleaning only."""
     if val is None:
         return val
     s = str(val)
@@ -86,95 +90,20 @@ def normalize_cell_text_raw(val):
     return s
 
 
-def normalize_cell_text_clean(val):
-    """
-    Strong cleaning for OCR/table text:
-    - Convert newlines to spaces
-    - Fix spaced letters: 'G B' -> 'GB', 'C o d e' -> 'Code'
-    - Fix spaced digits: '1 1 9 6' -> '1196'
-    - Fix split-words like 's tandard' -> 'standard'
-    - Remove weird separators and extra spaces around punctuation
-    """
-    if val is None:
-        return val
-    s = str(val)
-
-    # Normalize line breaks to spaces
-    s = s.replace("\r\n", "\n").replace("\r", "\n")
-    s = re.sub(r"\n+", "\n", s)
-    s = s.replace("\n", " ")
-
-    # Remove non-breaking spaces etc.
-    s = s.replace("\u00a0", " ")
-
-    # Collapse whitespace
-    s = _collapse_spaces(s)
-
-    # Remove leading junk like "| " if present
-    s = re.sub(r"^\|\s*", "", s)
-
-    # Join spaced single letters (>=4 letters)
-    # e.g., "C o d e f o r" -> "Codefor" (we will add spaces back later using word rules)
-    def join_spaced_letters(match):
-        return match.group(0).replace(" ", "")
-
-    s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
-
-    # Join spaced digits sequences (>=4 digits)
-    s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
-
-    # Now fix common OCR “split word” pattern: one letter + space + rest
-    # e.g., "s tandard" -> "standard", "p ollutants" -> "pollutants"
-    # Apply repeatedly because it may appear multiple times.
-    for _ in range(2):
-        s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
-
-    # Clean spaces around punctuation: commas, periods, slashes, hyphens, plus, colon
-    s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
-
-    # Special handling for GB codes: add a space between prefix and number if missing
-    # e.g., "GB/T1196" -> "GB/T 1196", "GB25465" -> "GB 25465"
-    s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
-
-    # Put spaces between words if we accidentally glued "Codefor" type strings:
-    # A simple heuristic: insert space before lowercase->uppercase transitions (rare here),
-    # and between long glued segments "Codeforconstruction" is hard; better to keep as is.
-    # Most OCR outputs already have spaces preserved; we mainly fix broken spaces.
-
-    s = _collapse_spaces(s)
-    return s
-
-
-# -----------------------------
-# PDF Text-layer table extraction (better for text-based PDFs)
-# -----------------------------
 def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int = 20) -> List[pd.DataFrame]:
-    """
-    Use pdfplumber to extract tables from text-based PDFs.
-    Returns list of DataFrames.
-    This is often MUCH cleaner than OCR for docs like standards tables.
-    """
     import pdfplumber
-
     dfs: List[pd.DataFrame] = []
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages[:max_pages]:
-            # Extract tables (list of list rows)
             tbls = page.extract_tables()
             if not tbls:
                 continue
             for t in tbls:
-                if not t:
-                    continue
-                df = pd.DataFrame(t)
-                # Sometimes first row is header; we keep raw to avoid wrong assumptions
-                dfs.append(df)
+                if t:
+                    dfs.append(pd.DataFrame(t))
     return dfs
 
 
-# -----------------------------
-# Sidebar controls
-# -----------------------------
 with st.sidebar:
     st.header("Controls")
 
@@ -182,7 +111,8 @@ with st.sidebar:
         "Task",
         [
             "PDF/Image → Tables → Excel (.xlsx)",
-            "PDF → Word (.docx)",
+            "PDF → Word (.docx) (text-based PDF)",
+            "Scanned PDF (image) → Word (.docx) (OCR editable text)",
             "PDF → PPT (.pptx)",
             "Image → PDF",
             "Extract Text (OCR) → TXT",
@@ -199,7 +129,6 @@ with st.sidebar:
     prefer_text_layer = st.checkbox(
         "For PDF tables: prefer PDF text layer (cleaner) when possible",
         value=True,
-        help="If checked, app first tries pdfplumber tables for PDFs (no OCR). If none found, it falls back to OCR/img2table.",
     )
 
     ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
@@ -226,7 +155,7 @@ with left:
         except Exception:
             st.warning("Could not preview image.")
     else:
-        st.info("PDF uploaded. Preview shown only for OCR tasks.")
+        st.info("PDF uploaded. Preview shown for OCR operations.")
 
 if not run:
     st.stop()
@@ -236,7 +165,7 @@ with right:
 
 
 # -----------------------------
-# Task: Image -> PDF
+# Image -> PDF
 # -----------------------------
 if task == "Image → PDF":
     if not is_image(filename):
@@ -253,7 +182,7 @@ if task == "Image → PDF":
 
 
 # -----------------------------
-# Task: Extract Text (OCR) -> TXT
+# OCR -> TXT
 # -----------------------------
 if task == "Extract Text (OCR) → TXT":
     import pytesseract
@@ -278,19 +207,18 @@ if task == "Extract Text (OCR) → TXT":
         st.text_area("Extracted OCR text", text, height=350)
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
-
     else:
+        import pytesseract
         img = Image.open(BytesIO(file_bytes)).convert("RGB")
         with st.spinner("Running OCR on image..."):
             text = pytesseract.image_to_string(img, lang=ocr_lang).strip() or "(No text extracted)"
-
         st.text_area("Extracted OCR text", text, height=350)
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
 
 
 # -----------------------------
-# Task: PDF/Image -> Tables -> Excel
+# PDF/Image -> Tables -> Excel
 # -----------------------------
 if task == "PDF/Image → Tables → Excel (.xlsx)":
     from openpyxl.styles import Alignment
@@ -299,7 +227,6 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
 
     tables_dfs: List[pd.DataFrame] = []
 
-    # 1) Try PDF text layer extraction (cleaner) if enabled and input is PDF
     if is_pdf(filename) and prefer_text_layer:
         with st.spinner("Trying PDF text-layer table extraction (pdfplumber)..."):
             try:
@@ -307,10 +234,8 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
             except Exception:
                 tables_dfs = []
 
-    # If no tables found, fallback to OCR-based img2table
     if not tables_dfs:
         with st.spinner("Falling back to OCR-based table extraction (img2table + Tesseract)..."):
-            # Heavy imports only when needed
             from img2table.ocr import TesseractOCR
             from img2table.document import PDF as Img2TablePDF
             from img2table.document import Image as Img2TableImage
@@ -356,10 +281,6 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
             tables_obj = extract_tables_pdf(file_bytes) if is_pdf(filename) else extract_tables_img(file_bytes)
             tables = flatten_img2table_tables(tables_obj)
 
-            if not tables:
-                st.error("No tables detected. Try clearer input or adjust OCR confidence.")
-                st.stop()
-
             for t in tables:
                 df = table_to_df_safe(t)
                 if df is not None:
@@ -369,18 +290,14 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
         st.error("No tables could be extracted.")
         st.stop()
 
-    # Clean/Raw normalize all DFs for export + preview
     cleaned_dfs = [df.applymap(normalizer) for df in tables_dfs]
-
     st.success(f"Extracted {len(cleaned_dfs)} table(s). Previewing Table 1:")
     st.dataframe(cleaned_dfs[0], use_container_width=True)
 
-    # Export all tables to Excel (multi-sheet), wrap OFF
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         for i, df in enumerate(cleaned_dfs, start=1):
-            sheet = f"Table_{i}"[:31]
-            df.to_excel(writer, sheet_name=sheet, index=False)
+            df.to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False)
 
         wb = writer.book
         for ws in wb.worksheets:
@@ -394,20 +311,13 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
         "tables.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    st.download_button(
-        "Download Table 1 (CSV)",
-        cleaned_dfs[0].to_csv(index=False).encode("utf-8"),
-        "table_1.csv",
-        "text/csv",
-    )
     st.stop()
 
 
 # -----------------------------
-# Task: PDF -> Word
+# PDF -> Word (text-based)
 # -----------------------------
-if task == "PDF → Word (.docx)":
+if task == "PDF → Word (.docx) (text-based PDF)":
     if not is_pdf(filename):
         st.error("Please upload a PDF for PDF → Word.")
         st.stop()
@@ -421,7 +331,7 @@ if task == "PDF → Word (.docx)":
     docx_path = pdf_path.replace(".pdf", ".docx")
 
     try:
-        with st.spinner("Converting PDF → DOCX (may take time)..."):
+        with st.spinner("Converting PDF → DOCX (text-based)..."):
             cv = Converter(pdf_path)
             cv.convert(docx_path, start=0, end=None)
             cv.close()
@@ -429,7 +339,7 @@ if task == "PDF → Word (.docx)":
         with open(docx_path, "rb") as f:
             docx_bytes = f.read()
 
-        st.success("Converted PDF to Word.")
+        st.success("Converted PDF to Word (text-based).")
         st.download_button(
             "Download DOCX",
             docx_bytes,
@@ -448,7 +358,52 @@ if task == "PDF → Word (.docx)":
 
 
 # -----------------------------
-# Task: PDF -> PPT
+# Scanned PDF (image) -> Word (OCR editable text)
+# -----------------------------
+if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
+    if not is_pdf(filename):
+        st.error("Please upload a PDF for OCR → Word.")
+        st.stop()
+
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    from docx import Document
+
+    with st.spinner("Rendering PDF pages to images..."):
+        images = convert_from_bytes(file_bytes, dpi=260)[:max_pages]
+
+    if images:
+        left.image(images[0], caption="First page rendered (OCR)", use_container_width=True)
+
+    doc = Document()
+    doc.add_heading("OCR Extracted Text", level=1)
+    doc.add_paragraph(f"Source: {uploaded.name}")
+    doc.add_paragraph("")
+
+    with st.spinner("Running OCR and building DOCX..."):
+        for i, im in enumerate(images, start=1):
+            doc.add_heading(f"Page {i}", level=2)
+            txt = pytesseract.image_to_string(im, lang=ocr_lang).strip()
+            txt = txt if txt else "(No text extracted)"
+            # Preserve some line breaks
+            for line in txt.splitlines():
+                doc.add_paragraph(line)
+
+    out = BytesIO()
+    doc.save(out)
+
+    st.success("Created DOCX with editable OCR text.")
+    st.download_button(
+        "Download DOCX (OCR)",
+        out.getvalue(),
+        "output_ocr.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    st.stop()
+
+
+# -----------------------------
+# PDF -> PPT (text layer)
 # -----------------------------
 if task == "PDF → PPT (.pptx)":
     if not is_pdf(filename):
@@ -461,8 +416,7 @@ if task == "PDF → PPT (.pptx)":
 
     def clean_line(s: str) -> str:
         s = (s or "").replace("\x00", " ")
-        s = re.sub(r"[ \t]+", " ", s)
-        return s.strip()
+        return re.sub(r"[ \t]+", " ", s).strip()
 
     with st.spinner("Extracting text from PDF..."):
         parts = []
@@ -488,11 +442,8 @@ if task == "PDF → PPT (.pptx)":
 
         first = True
         for ln in lines:
-            if first:
-                p = tf.paragraphs[0]
-                first = False
-            else:
-                p = tf.add_paragraph()
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
             p.text = ln[:180]
             p.level = 0
             p.font.size = Pt(14)
