@@ -22,6 +22,13 @@ def is_image(name: str) -> bool:
     return name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
 
 
+def pil_to_png_bytes(im: Image.Image) -> bytes:
+    """Convert PIL image to PNG bytes for Streamlit display (avoids TypeError)."""
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def flatten_img2table_tables(tables_obj) -> List:
     if tables_obj is None:
         return []
@@ -55,10 +62,20 @@ def _collapse_spaces(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
 
+def normalize_cell_text_raw(val):
+    if val is None:
+        return val
+    s = str(val)
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s
+
+
 def normalize_cell_text_clean(val):
     if val is None:
         return val
     s = str(val)
+
     s = s.replace("\r\n", "\n").replace("\r", "\n")
     s = re.sub(r"\n+", "\n", s).replace("\n", " ")
     s = s.replace("\u00a0", " ")
@@ -69,25 +86,21 @@ def normalize_cell_text_clean(val):
     def join_spaced_letters(m):
         return m.group(0).replace(" ", "")
 
+    # join spaced letters / digits
     s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
     s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
 
+    # fix split words like "s tandard" -> "standard"
     for _ in range(2):
         s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
 
+    # cleanup punctuation spacing
     s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
+
+    # GB codes: add space between prefix and number
     s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
 
     return _collapse_spaces(s)
-
-
-def normalize_cell_text_raw(val):
-    if val is None:
-        return val
-    s = str(val)
-    s = s.replace("\r\n", "\n").replace("\r", "\n")
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s
 
 
 def extract_tables_pdf_textlayer(pdf_bytes: bytes, max_pages: int = 20) -> List[pd.DataFrame]:
@@ -151,7 +164,8 @@ with left:
     st.subheader("Input preview")
     if is_image(filename):
         try:
-            st.image(Image.open(BytesIO(file_bytes)), use_container_width=True)
+            im = Image.open(BytesIO(file_bytes))
+            left.image(pil_to_png_bytes(im), caption="Uploaded image", use_container_width=True)
         except Exception:
             st.warning("Could not preview image.")
     else:
@@ -194,7 +208,7 @@ if task == "Extract Text (OCR) → TXT":
             images = convert_from_bytes(file_bytes, dpi=240)[:max_pages]
 
         if images:
-            left.image(images[0], caption="First page rendered", use_container_width=True)
+            left.image(pil_to_png_bytes(images[0]), caption="First page rendered (OCR)", use_container_width=True)
 
         parts = []
         with st.spinner("Running OCR..."):
@@ -208,7 +222,6 @@ if task == "Extract Text (OCR) → TXT":
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
     else:
-        import pytesseract
         img = Image.open(BytesIO(file_bytes)).convert("RGB")
         with st.spinner("Running OCR on image..."):
             text = pytesseract.image_to_string(img, lang=ocr_lang).strip() or "(No text extracted)"
@@ -291,6 +304,7 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
         st.stop()
 
     cleaned_dfs = [df.applymap(normalizer) for df in tables_dfs]
+
     st.success(f"Extracted {len(cleaned_dfs)} table(s). Previewing Table 1:")
     st.dataframe(cleaned_dfs[0], use_container_width=True)
 
@@ -358,7 +372,7 @@ if task == "PDF → Word (.docx) (text-based PDF)":
 
 
 # -----------------------------
-# Scanned PDF (image) -> Word (OCR editable text)
+# Scanned PDF -> Word (OCR editable text)
 # -----------------------------
 if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
     if not is_pdf(filename):
@@ -373,7 +387,7 @@ if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
         images = convert_from_bytes(file_bytes, dpi=260)[:max_pages]
 
     if images:
-        left.image(images[0], caption="First page rendered (OCR)", use_container_width=True)
+        left.image(pil_to_png_bytes(images[0]), caption="First page rendered (OCR)", use_container_width=True)
 
     doc = Document()
     doc.add_heading("OCR Extracted Text", level=1)
@@ -385,7 +399,6 @@ if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
             doc.add_heading(f"Page {i}", level=2)
             txt = pytesseract.image_to_string(im, lang=ocr_lang).strip()
             txt = txt if txt else "(No text extracted)"
-            # Preserve some line breaks
             for line in txt.splitlines():
                 doc.add_paragraph(line)
 
