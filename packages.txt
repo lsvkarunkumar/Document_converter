@@ -1,4 +1,6 @@
 tesseract-ocr
 poppler-utils
+ghostscript
+qpdf
 libgl1
 libglib2.0-0
