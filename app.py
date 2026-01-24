@@ -22,11 +22,36 @@ def is_image(name: str) -> bool:
     return name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
 
 
-def pil_to_png_bytes(im: Image.Image) -> bytes:
-    """Convert PIL image to PNG bytes for Streamlit display (avoids TypeError)."""
-    buf = BytesIO()
-    im.save(buf, format="PNG")
-    return buf.getvalue()
+def to_displayable_image(obj):
+    """
+    Convert various image-like objects to something Streamlit can display reliably.
+    Returns either a PIL Image or a numpy array.
+    """
+    try:
+        # If it's already a PIL Image
+        if isinstance(obj, Image.Image):
+            return obj
+    except Exception:
+        pass
+
+    # Try converting via PIL if possible
+    try:
+        im = obj.convert("RGB")  # some objects behave like PIL
+        if isinstance(im, Image.Image):
+            return im
+    except Exception:
+        pass
+
+    # Last resort: numpy array conversion
+    try:
+        import numpy as np
+
+        if isinstance(obj, Image.Image):
+            return np.array(obj.convert("RGB"))
+        # Some objects can be directly array-converted
+        return np.array(obj)
+    except Exception:
+        return None
 
 
 def flatten_img2table_tables(tables_obj) -> List:
@@ -86,18 +111,13 @@ def normalize_cell_text_clean(val):
     def join_spaced_letters(m):
         return m.group(0).replace(" ", "")
 
-    # join spaced letters / digits
     s = re.sub(r"(?:\b[A-Za-z]\b(?:\s+|$)){4,}", join_spaced_letters, s)
     s = re.sub(r"(?:\b\d\b\s+){3,}\b\d\b", lambda m: m.group(0).replace(" ", ""), s)
 
-    # fix split words like "s tandard" -> "standard"
     for _ in range(2):
         s = re.sub(r"\b([A-Za-z])\s+([A-Za-z]{2,})\b", r"\1\2", s)
 
-    # cleanup punctuation spacing
     s = re.sub(r"\s*([,/:\.\-\+])\s*", r"\1", s)
-
-    # GB codes: add space between prefix and number
     s = re.sub(r"\b(GB(?:/T)?)\s*([0-9])", r"\1 \2", s, flags=re.IGNORECASE)
 
     return _collapse_spaces(s)
@@ -144,6 +164,12 @@ with st.sidebar:
         value=True,
     )
 
+    show_ocr_preview = st.checkbox(
+        "Show OCR preview image (first page)",
+        value=False,
+        help="Turn ON if you want to see first rendered page. If OFF, avoids image display errors and is faster.",
+    )
+
     ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
     max_pages = st.slider("Max pages", 1, 50, 10)
     min_conf = st.slider("Min OCR confidence (OCR tables)", 0, 100, 50)
@@ -164,12 +190,12 @@ with left:
     st.subheader("Input preview")
     if is_image(filename):
         try:
-            im = Image.open(BytesIO(file_bytes))
-            left.image(pil_to_png_bytes(im), caption="Uploaded image", use_container_width=True)
+            im = Image.open(BytesIO(file_bytes)).convert("RGB")
+            left.image(im, caption="Uploaded image", use_container_width=True)
         except Exception:
             st.warning("Could not preview image.")
     else:
-        st.info("PDF uploaded. Preview shown for OCR operations.")
+        st.info("PDF uploaded. Preview shown only if OCR preview is enabled.")
 
 if not run:
     st.stop()
@@ -207,8 +233,12 @@ if task == "Extract Text (OCR) → TXT":
         with st.spinner("Rendering PDF pages for OCR..."):
             images = convert_from_bytes(file_bytes, dpi=240)[:max_pages]
 
-        if images:
-            left.image(pil_to_png_bytes(images[0]), caption="First page rendered (OCR)", use_container_width=True)
+        if show_ocr_preview and images:
+            disp = to_displayable_image(images[0])
+            if disp is not None:
+                left.image(disp, caption="First page rendered (OCR)", use_container_width=True)
+            else:
+                left.warning("Could not preview rendered page (but OCR will still work).")
 
         parts = []
         with st.spinner("Running OCR..."):
@@ -221,6 +251,7 @@ if task == "Extract Text (OCR) → TXT":
         st.text_area("Extracted OCR text", text, height=350)
         st.download_button("Download TXT", text.encode("utf-8"), "output.txt", "text/plain")
         st.stop()
+
     else:
         img = Image.open(BytesIO(file_bytes)).convert("RGB")
         with st.spinner("Running OCR on image..."):
@@ -237,7 +268,6 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
     from openpyxl.styles import Alignment
 
     normalizer = normalize_cell_text_clean if output_mode.startswith("Clean") else normalize_cell_text_raw
-
     tables_dfs: List[pd.DataFrame] = []
 
     if is_pdf(filename) and prefer_text_layer:
@@ -304,7 +334,6 @@ if task == "PDF/Image → Tables → Excel (.xlsx)":
         st.stop()
 
     cleaned_dfs = [df.applymap(normalizer) for df in tables_dfs]
-
     st.success(f"Extracted {len(cleaned_dfs)} table(s). Previewing Table 1:")
     st.dataframe(cleaned_dfs[0], use_container_width=True)
 
@@ -386,8 +415,12 @@ if task == "Scanned PDF (image) → Word (.docx) (OCR editable text)":
     with st.spinner("Rendering PDF pages to images..."):
         images = convert_from_bytes(file_bytes, dpi=260)[:max_pages]
 
-    if images:
-        left.image(pil_to_png_bytes(images[0]), caption="First page rendered (OCR)", use_container_width=True)
+    if show_ocr_preview and images:
+        disp = to_displayable_image(images[0])
+        if disp is not None:
+            left.image(disp, caption="First page rendered (OCR)", use_container_width=True)
+        else:
+            left.warning("Could not preview rendered page (but OCR will still work).")
 
     doc = Document()
     doc.add_heading("OCR Extracted Text", level=1)
