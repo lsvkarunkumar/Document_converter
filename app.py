@@ -13,101 +13,125 @@ from PIL import Image
 
 
 # ============================================================
-# Page config + One-page (no main scroll) UI
+# CONFIG
 # ============================================================
 st.set_page_config(page_title="DocFlow Converter", layout="wide")
 
+# ============================================================
+# PREMIUM UI (Website feel)
+# ============================================================
 st.markdown(
     """
     <style>
-      /* ---------- Page sizing: force "single page" feel ---------- */
-      html, body, [class*="stApp"] { height: 100%; overflow: hidden; }
-      .block-container { max-width: 1220px; padding-top: 0.8rem; padding-bottom: 0.8rem; height: calc(100vh - 1.2rem); overflow: hidden; }
+      /* Base */
+      html, body, [class*="stApp"] {
+        background: radial-gradient(1200px 800px at 10% 0%, rgba(99,102,241,0.18), transparent 55%),
+                    radial-gradient(900px 700px at 85% 10%, rgba(16,185,129,0.14), transparent 55%),
+                    linear-gradient(180deg, #f7f8fb, #f3f4f6);
+        color: #0f172a;
+      }
+      .block-container { max-width: 1180px; padding-top: 1.2rem; padding-bottom: 2.0rem; }
 
-      /* ---------- Header ---------- */
-      .topbar {
+      /* Hide Streamlit footer/menu */
+      #MainMenu, footer { visibility: hidden; }
+      header { visibility: hidden; }
+
+      /* Hero */
+      .hero {
         display:flex; align-items:center; justify-content:space-between;
-        padding: 12px 14px; border-radius: 14px;
-        border: 1px solid rgba(0,0,0,0.08);
-        background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.86));
-        margin-bottom: 10px;
+        gap: 16px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(15,23,42,0.08);
+        background: rgba(255,255,255,0.75);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 10px 24px rgba(15,23,42,0.06);
+        margin-bottom: 14px;
       }
-      .brand { font-size: 18px; font-weight: 850; letter-spacing: .2px; }
-      .sub { color: rgba(0,0,0,0.62); font-size: 13px; margin-top: 2px; }
-      .tag {
-        font-size: 12px; padding: 4px 10px; border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.10);
-        background: rgba(255,255,255,0.92);
-      }
-
-      /* ---------- Cards ---------- */
-      .card {
-        border: 1px solid rgba(0,0,0,0.08);
+      .brandwrap { display:flex; align-items:center; gap: 12px; }
+      .logo {
+        width: 42px; height: 42px;
         border-radius: 14px;
-        padding: 14px 14px;
-        background: rgba(255,255,255,0.92);
-        height: calc(100vh - 120px); /* header + padding */
-        overflow: hidden;
+        background: linear-gradient(135deg, rgba(99,102,241,0.95), rgba(16,185,129,0.90));
+        box-shadow: 0 10px 18px rgba(99,102,241,0.18);
       }
-
-      .muted { color: rgba(0,0,0,0.62); font-size: 13px; }
-      .divider { height: 1px; background: rgba(0,0,0,0.08); margin: 12px 0; }
-
-      .step {
-        display: inline-flex; align-items: center; gap: 8px;
-        font-size: 13px; padding: 6px 10px; border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.08);
-        background: rgba(255,255,255,0.88);
+      .brand {
+        font-size: 18px; font-weight: 900; letter-spacing: 0.2px;
+        margin: 0;
       }
-      .step b {
-        font-size: 12px; padding: 3px 8px; border-radius: 999px;
-        background: rgba(0,0,0,0.06);
+      .tagline {
+        margin-top: 2px;
+        color: rgba(15,23,42,0.65);
+        font-size: 13px;
       }
-
-      .pill {
-        display:inline-block; padding: 4px 10px;
+      .chiprow { display:flex; gap: 8px; flex-wrap: wrap; justify-content:flex-end; }
+      .chip {
+        font-size: 12px; padding: 6px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.10);
-        background: rgba(0,0,0,0.04);
+        border: 1px solid rgba(15,23,42,0.10);
+        background: rgba(255,255,255,0.70);
+        color: rgba(15,23,42,0.75);
+      }
+
+      /* Cards */
+      .card {
+        border-radius: 18px;
+        border: 1px solid rgba(15,23,42,0.08);
+        background: rgba(255,255,255,0.72);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+        padding: 14px 14px;
+      }
+      .cardtitle {
+        display:flex; align-items:center; justify-content:space-between;
+        margin-bottom: 8px;
+      }
+      .cardtitle h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 900;
+        color: rgba(15,23,42,0.9);
+      }
+      .muted { color: rgba(15,23,42,0.62); font-size: 12px; }
+
+      /* Badges */
+      .badges { display:flex; flex-wrap:wrap; gap:8px; margin-top: 8px; }
+      .badge {
         font-size: 12px;
-        margin-right: 6px;
-      }
-
-      /* ---------- Internal scroll areas (not whole page) ---------- */
-      .panel-scroll {
-        height: calc(100% - 88px); /* room for title + controls */
-        overflow: auto;
-        padding-right: 6px;
-      }
-
-      /* ---------- Faded static format buttons ---------- */
-      .formatbar { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; margin-bottom:10px; }
-      .fmt {
-        display:inline-flex; align-items:center; gap:8px;
         padding: 7px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.10);
-        background: rgba(0,0,0,0.03);
-        font-size: 12px;
-        opacity: 0.42;
-        user-select:none;
+        border: 1px solid rgba(15,23,42,0.10);
+        background: rgba(15,23,42,0.03);
+        color: rgba(15,23,42,0.70);
       }
-      .fmt b { opacity: 0.9; }
+      .badge b { color: rgba(15,23,42,0.92); }
 
-      /* ---------- Sidebar history box (scroll after 4) ---------- */
-      .histbox {
-        border: 1px solid rgba(0,0,0,0.08);
-        border-radius: 12px;
-        padding: 10px 10px;
-        background: rgba(255,255,255,0.9);
-        max-height: 170px; /* ~4 items */
-        overflow: auto;
+      /* Streamlit widgets tweaks */
+      div[data-testid="stFileUploader"] section {
+        border-radius: 16px !important;
+        border: 1px dashed rgba(15,23,42,0.22) !important;
+        background: rgba(255,255,255,0.65) !important;
       }
-      .histitem { font-size: 12px; color: rgba(0,0,0,0.7); margin-bottom: 8px; }
-      .histmeta { color: rgba(0,0,0,0.5); font-size: 11px; }
+      div[data-testid="stFileUploader"] section:hover {
+        border-color: rgba(99,102,241,0.55) !important;
+        box-shadow: 0 10px 20px rgba(99,102,241,0.10);
+      }
 
-      /* Reduce whitespace */
-      div[data-testid="stVerticalBlock"] > div { padding-top: 0.2rem; padding-bottom: 0.2rem; }
+      /* Buttons */
+      .stButton button {
+        border-radius: 14px !important;
+        font-weight: 800 !important;
+        padding: 10px 14px !important;
+      }
+      .stDownloadButton button {
+        border-radius: 14px !important;
+        font-weight: 800 !important;
+        padding: 10px 14px !important;
+      }
+
+      /* Section spacing */
+      .spacer { height: 10px; }
+      hr { border: none; height: 1px; background: rgba(15,23,42,0.08); margin: 12px 0; }
 
     </style>
     """,
@@ -116,12 +140,19 @@ st.markdown(
 
 st.markdown(
     """
-    <div class="topbar">
-      <div>
-        <div class="brand">DocFlow Converter</div>
-        <div class="sub">Upload → Choose → Convert → Download</div>
+    <div class="hero">
+      <div class="brandwrap">
+        <div class="logo"></div>
+        <div>
+          <div class="brand">DocFlow Converter</div>
+          <div class="tagline">Beautiful web converter • Upload → Choose → Convert → Download</div>
+        </div>
       </div>
-      <div class="tag">Web-only • Streamlit Cloud</div>
+      <div class="chiprow">
+        <div class="chip">100% Web (Streamlit)</div>
+        <div class="chip">Cloud-safe OCR</div>
+        <div class="chip">ZIP bundle exports</div>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -129,7 +160,7 @@ st.markdown(
 
 
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 def now_stamp() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d_%H%M%S_UTC")
@@ -187,7 +218,7 @@ def mime_for(name: str) -> str:
 
 
 # ============================================================
-# OCR / PDF helpers (pip-only)
+# OCR / PDF (cloud-safe: EasyOCR + PyMuPDF + pdfplumber)
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def _easyocr_reader(lang_code: str):
@@ -196,7 +227,6 @@ def _easyocr_reader(lang_code: str):
 
 
 def _ui_lang_to_easyocr(ui_lang: str) -> str:
-    # UI shows "eng"; EasyOCR uses "en"
     return "en" if ui_lang == "eng" else "en"
 
 
@@ -275,7 +305,7 @@ def pdf_metadata_to_json(pdf_bytes: bytes) -> bytes:
 
 
 # ============================================================
-# Tables extraction (text-layer first + OCR fallback)
+# TABLES (text-layer first, then OCR fallback)
 # ============================================================
 def normalize_cell_text_clean(val):
     if val is None:
@@ -348,9 +378,6 @@ def build_tables_bundle(tables: List[pd.DataFrame], base: str) -> Dict[str, byte
     return files
 
 
-# ============================================================
-# OCR Table extraction (Image / Scanned PDF pages)
-# ============================================================
 def extract_table_from_image_webonly(
     img: Image.Image,
     lang_ui: str,
@@ -360,8 +387,8 @@ def extract_table_from_image_webonly(
     deskew: bool
 ) -> Tuple[List[pd.DataFrame], str]:
     """
-    bordered: detect grid-ish cell boxes + OCR per cell
-    borderless: OCR whole image -> split into columns by multi-space (best-effort)
+    bordered: detect grid-ish cell boxes + OCR per cell (good for most invoices/line tables)
+    borderless: OCR whole image -> split columns by multi-space (best-effort)
     """
     import cv2
 
@@ -420,7 +447,7 @@ def extract_table_from_image_webonly(
         boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
 
         if len(boxes) < 6:
-            return [], "Bordered: not enough cells detected. Try Borderless, increase clarity/DPI, or enable Enhance/Deskew."
+            return [], "Bordered: not enough cells detected. Try Borderless or increase DPI/clarity."
 
         texts = []
         for (x, y, ww, hh) in boxes:
@@ -460,7 +487,6 @@ def extract_table_from_image_webonly(
         n_rows = max(row_ids) + 1
         n_cols = max(col_ids) + 1
         grid_cells = [["" for _ in range(n_cols)] for _ in range(n_rows)]
-
         for i, t in enumerate(texts):
             r = row_ids[i]
             c = col_ids[i]
@@ -469,10 +495,10 @@ def extract_table_from_image_webonly(
         df = pd.DataFrame(grid_cells)
         df = df.replace("", np.nan).dropna(axis=0, how="all").dropna(axis=1, how="all").fillna("")
         if df.empty:
-            return [], "Bordered: detected cells but table was empty after cleaning."
+            return [], "Bordered: detected cells but output was empty after cleaning."
         return [df], f"Bordered: extracted table {df.shape[0]}×{df.shape[1]}."
 
-    # Borderless mode (best-effort)
+    # Borderless mode
     parts = reader.readtext(rgb, detail=1)
     good = [p for p in parts if len(p) >= 3 and float(p[2]) >= conf01 and str(p[1]).strip()]
     if not good:
@@ -503,32 +529,53 @@ def extract_table_from_image_webonly(
 
 
 # ============================================================
-# PDF -> DOCX (high-fidelity attempt)
+# SEARCHABLE PDF (web-only overlay text)
 # ============================================================
-def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
-    from pdf2docx import Converter
-    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    in_path = f"/tmp/in_{tmp_id}.pdf"
-    out_path = f"/tmp/out_{tmp_id}.docx"
-    with open(in_path, "wb") as f:
-        f.write(pdf_bytes)
-    try:
-        cv = Converter(in_path)
-        cv.convert(out_path, start=0, end=None)
-        cv.close()
-        with open(out_path, "rb") as f:
-            return f.read()
-    finally:
-        for p in (in_path, out_path):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+def make_searchable_pdf_from_images(images: List[Image.Image], lang_ui: str, conf01: float) -> bytes:
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    from reportlab.lib.colors import Color
+
+    reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
+    invisible = Color(0, 0, 0, alpha=0.01)
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+
+    for img in images:
+        w_px, h_px = img.size
+        c.setPageSize((w_px, h_px))
+        c.drawImage(ImageReader(img), 0, 0, width=w_px, height=h_px, mask="auto")
+
+        arr = np.array(img.convert("RGB"))
+        results = reader.readtext(arr, detail=1)
+
+        c.setFillColor(invisible)
+        for box, text, conf in results:
+            if float(conf) < conf01:
+                continue
+            if not text or not str(text).strip():
+                continue
+
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            x_min, x_max = float(min(xs)), float(max(xs))
+            y_min, y_max = float(min(ys)), float(max(ys))
+
+            pdf_x = x_min
+            pdf_y = h_px - y_max
+            font_size = max(6.0, min(24.0, (y_max - y_min) * 0.8))
+            c.setFont("Helvetica", font_size)
+            c.drawString(pdf_x, pdf_y, re.sub(r"\s+", " ", str(text))[:200])
+
+        c.showPage()
+
+    c.save()
+    return buf.getvalue()
 
 
 # ============================================================
-# Excel / Word / PPT helpers (same as your earlier)
+# Office conversions
 # ============================================================
 def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 90, max_cols: int = 14) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
@@ -618,237 +665,281 @@ def docx_to_plain_text(docx_bytes: bytes) -> str:
     return "\n".join(parts).strip()
 
 
+def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
+    from pdf2docx import Converter
+    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    in_path = f"/tmp/in_{tmp_id}.pdf"
+    out_path = f"/tmp/out_{tmp_id}.docx"
+    with open(in_path, "wb") as f:
+        f.write(pdf_bytes)
+    try:
+        cv = Converter(in_path)
+        cv.convert(out_path, start=0, end=None)
+        cv.close()
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (in_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+
 # ============================================================
-# Session state
+# STATE
 # ============================================================
 if "outputs" not in st.session_state:
-    st.session_state.outputs = {}
+    st.session_state.outputs = {}  # name -> bytes
 
 if "history" not in st.session_state:
-    st.session_state.history = []  # list of dicts
+    st.session_state.history = []  # list[dict]
 
-if "prefill_task_key" not in st.session_state:
-    st.session_state.prefill_task_key = None  # from history "Use again"
+if "last_preview_key" not in st.session_state:
+    st.session_state.last_preview_key = None
 
 
 def push_history(task_label: str, task_key: str, fname: str):
     st.session_state.history.insert(0, {
-        "time": datetime.utcnow().strftime("%H:%M:%S"),
+        "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
         "task": task_label,
         "task_key": task_key,
         "file": fname,
     })
-    st.session_state.history = st.session_state.history[:50]
+    st.session_state.history = st.session_state.history[:60]
 
 
 # ============================================================
-# Sidebar (history at bottom; does NOT affect conversion unless "Use again")
+# SIDEBAR (kept minimal, premium)
 # ============================================================
 with st.sidebar:
     st.markdown("### Settings")
     with st.expander("Advanced options", expanded=False):
         ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
         max_pages = st.slider("Max pages (PDF)", 1, 80, 12)
-        ocr_dpi = st.slider("OCR quality (DPI)", 200, 400, 260, step=10)
+        ocr_dpi = st.slider("OCR DPI", 200, 400, 260, step=10)
         min_conf = st.slider("OCR confidence", 10, 95, 50)
         table_mode = st.selectbox("Table mode", ["bordered", "borderless"], index=0)
-        enhance = st.checkbox("Enhance image", value=True)
-        deskew = st.checkbox("Deskew", value=True)
+        enhance = st.checkbox("Enhance scan", value=True)
+        deskew = st.checkbox("Deskew scan", value=True)
 
     st.markdown("---")
-    st.markdown("### History (last 4 visible)")
-    st.caption("History never changes your conversion unless you click **Use again**.")
-
-    if st.session_state.history:
-        st.markdown('<div class="histbox">', unsafe_allow_html=True)
-        # Render all; box scrolls after ~4
-        for i, h in enumerate(st.session_state.history):
-            # Use a small button to prefill, but not auto convert
-            cols = st.columns([0.78, 0.22])
-            with cols[0]:
-                st.markdown(
-                    f"<div class='histitem'><b>{h['task']}</b><div class='histmeta'>{h['time']} • {h['file']}</div></div>",
-                    unsafe_allow_html=True
-                )
-            with cols[1]:
-                if st.button("Use again", key=f"use_{i}", help="Prefills conversion dropdown (does not auto-run)"):
-                    st.session_state.prefill_task_key = h.get("task_key")
-            st.write("")
-        st.markdown("</div>", unsafe_allow_html=True)
-    else:
-        st.caption("No conversions yet.")
+    st.caption("Tip: **Bordered** works best for invoices & grid tables. Use **Borderless** for no-lines tables.")
 
 
 # ============================================================
-# Static faded formats bar (always visible)
+# CONVERSION MENU
 # ============================================================
-st.markdown(
-    """
-    <div class="formatbar">
-      <div class="fmt"><b>PDF</b> → Word</div>
-      <div class="fmt"><b>PDF</b> → Tables (Excel)</div>
-      <div class="fmt"><b>PDF</b> → Images</div>
-      <div class="fmt"><b>PDF</b> → Searchable</div>
-      <div class="fmt"><b>Image</b> → OCR Text</div>
-      <div class="fmt"><b>Image</b> → Tables (Excel)</div>
-      <div class="fmt"><b>Excel</b> → PDF</div>
-      <div class="fmt"><b>Word</b> → Tables (Excel)</div>
-      <div class="fmt"><b>PPT</b> → Text/Images</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+TASKS_BY_TYPE = {
+    "PDF": [
+        ("Extract Tables → Excel/CSV/JSON (ZIP)", "pdf_tables"),
+        ("Extract Text (Hybrid) → TXT", "pdf_text_txt"),
+        ("PDF → Editable Word (DOCX)", "pdf_to_docx"),
+        ("Create Searchable PDF (OCR layer)", "pdf_searchable"),
+        ("Pages → PNG (ZIP)", "pdf_pages_png"),
+        ("Metadata → JSON", "pdf_meta_json"),
+    ],
+    "IMAGE": [
+        ("OCR Image → TXT", "img_text_txt"),
+        ("Image Table → Excel/CSV/JSON (ZIP)", "img_tables"),
+        ("Image → PDF", "img_to_pdf"),
+        ("Image → Searchable PDF (OCR layer)", "img_searchable_pdf"),
+    ],
+    "EXCEL": [
+        ("Excel → PDF", "xlsx_to_pdf"),
+        ("Excel → Word (DOCX)", "xlsx_to_docx"),
+    ],
+    "WORD": [
+        ("Word → TXT", "docx_to_txt"),
+        ("Word Tables → Excel (XLSX)", "docx_tables_to_xlsx"),
+    ],
+    "PPT": [
+        ("PPT Text → TXT/JSON (ZIP)", "pptx_text_bundle"),
+        ("PPT Images → ZIP", "pptx_images_zip"),
+    ],
+}
 
 
 # ============================================================
-# Main layout: Left card (upload/choose) | Right card (convert/download)
-# All internal scrolling only
+# MAIN LAYOUT (polished)
 # ============================================================
-col_left, col_right = st.columns([1.08, 1.0], gap="large")
+left, right = st.columns([1.25, 1.0], gap="large")
 
-with col_left:
+with left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<div class="step"><b>1</b> Upload</div>', unsafe_allow_html=True)
+    st.markdown('<div class="cardtitle"><h3>Upload & Choose</h3><span class="muted">Step 1–3</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Drop a file below. You’ll see the best available conversions instantly.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
-    st.write("")
     uploaded = st.file_uploader(
         "Upload file",
         type=["pdf", "png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp", "docx", "xlsx", "xlsm", "pptx"],
-        label_visibility="visible",
+        label_visibility="collapsed",
     )
 
-    st.write("")
-    st.markdown('<div class="step"><b>2</b> Detected</div>', unsafe_allow_html=True)
-    st.write("")
+    st.markdown("<hr/>", unsafe_allow_html=True)
 
     if uploaded:
         filename = uploaded.name
         file_bytes = uploaded.read()
         ftype = infer_type(filename)
         base = safe_filename(os.path.splitext(filename)[0])
+
         st.markdown(
-            f"""<span class="pill"><b>{ftype}</b></span><span class="pill">{filename}</span>""",
+            f"""
+            <div class="badges">
+              <div class="badge"><b>Type</b>: {ftype}</div>
+              <div class="badge"><b>Name</b>: {filename}</div>
+              <div class="badge"><b>Size</b>: {len(file_bytes)/1024:.1f} KB</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Show beautiful static "capability" badges
+        caps = {
+            "PDF": ["PDF → Word", "PDF → Tables", "PDF → Searchable", "PDF → Images", "PDF → Metadata"],
+            "IMAGE": ["Image → OCR", "Image → Tables", "Image → PDF", "Image → Searchable"],
+            "EXCEL": ["Excel → PDF", "Excel → Word"],
+            "WORD": ["Word → Text", "Word → Tables"],
+            "PPT": ["PPT → Text", "PPT → Images"],
+        }.get(ftype, ["Upload a supported file"])
+
+        st.markdown(
+            "<div class='badges'>" +
+            "".join([f"<div class='badge'>{c}</div>" for c in caps]) +
+            "</div>",
             unsafe_allow_html=True
         )
-        st.caption("File loaded and ready.")
+
+        st.markdown("<div class='spacer'></div>", unsafe_allow_html=True)
+
+        opts = TASKS_BY_TYPE.get(ftype, [])
+        task_labels = [t[0] for t in opts] if opts else ["No conversions available"]
+        task_disabled = not bool(opts)
+
+        task_label = st.selectbox("Conversion", task_labels, index=0, disabled=task_disabled)
+        task_key = dict(opts).get(task_label) if not task_disabled else None
+
     else:
         filename = None
         file_bytes = None
         ftype = "—"
         base = "output"
-        st.markdown('<div class="muted">No file uploaded yet.</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="step"><b>3</b> Choose conversion</div>', unsafe_allow_html=True)
-    st.write("")
-
-    TASKS_BY_TYPE = {
-        "PDF": [
-            ("Extract Tables → Excel/CSV/JSON (ZIP)", "pdf_tables"),
-            ("Extract Text (Hybrid) → TXT", "pdf_text_txt"),
-            ("Convert → Word (DOCX) (High fidelity if text PDF)", "pdf_to_docx"),
-            ("Create Searchable PDF (OCR layer)", "pdf_searchable"),
-            ("Pages → PNG (ZIP)", "pdf_pages_png"),
-            ("Metadata → JSON", "pdf_meta_json"),
-        ],
-        "IMAGE": [
-            ("OCR Image → TXT", "img_text_txt"),
-            ("Extract Tables → Excel/CSV/JSON (ZIP)", "img_tables"),
-            ("Convert → PDF", "img_to_pdf"),
-            ("Convert → Searchable PDF (OCR layer)", "img_searchable_pdf"),
-        ],
-        "EXCEL": [
-            ("Convert → PDF", "xlsx_to_pdf"),
-            ("Convert → Word (DOCX)", "xlsx_to_docx"),
-        ],
-        "WORD": [
-            ("Convert → TXT", "docx_to_txt"),
-            ("Extract Tables → Excel (XLSX)", "docx_tables_to_xlsx"),
-        ],
-        "PPT": [
-            ("Extract Text → TXT/JSON (ZIP)", "pptx_text_bundle"),
-            ("Extract Embedded Images (ZIP)", "pptx_images_zip"),
-        ],
-    }
-
-    task_options = TASKS_BY_TYPE.get(ftype, [])
-    task_labels = [t[0] for t in task_options] if task_options else ["Upload a file to see conversions"]
-    task_disabled = not bool(uploaded and task_options)
-
-    # Prefill logic from history (does not run conversion)
-    prefill_key = st.session_state.prefill_task_key
-    st.session_state.prefill_task_key = None  # consume
-
-    task_key = None
-    if not task_disabled:
-        # Pick index by prefill_key if available
-        keys = [k for _, k in task_options]
-        idx = 0
-        if prefill_key in keys:
-            idx = keys.index(prefill_key)
-
-        task_label = st.selectbox("Conversion", task_labels, index=idx, disabled=task_disabled)
-        task_key = dict(task_options).get(task_label)
-    else:
-        task_label = st.selectbox("Conversion", task_labels, index=0, disabled=True)
+        task_label = None
         task_key = None
 
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="badges">
+              <div class="badge"><b>Supported</b>: PDF, Images, Word, Excel, PPT</div>
+              <div class="badge">OCR Tables → Excel</div>
+              <div class="badge">PDF → Editable Word</div>
+              <div class="badge">Batch ZIP Downloads</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    st.markdown('<div class="muted">Tip: For image/scanned PDF tables, try <b>bordered</b> first. If no grid lines, switch to <b>borderless</b>.</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-with col_right:
+with right:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-
-    st.markdown('<div class="step"><b>4</b> Convert</div>', unsafe_allow_html=True)
-    st.write("")
+    st.markdown('<div class="cardtitle"><h3>Convert & Download</h3><span class="muted">Step 4–5</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Your outputs appear here with preview + one-click ZIP bundle.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="spacer"></div>', unsafe_allow_html=True)
 
     convert_disabled = not (uploaded and task_key)
-    convert_btn = st.button("Convert", type="primary", disabled=convert_disabled)
+    colA, colB = st.columns([0.70, 0.30])
+    with colA:
+        convert_btn = st.button("Convert", type="primary", disabled=convert_disabled, use_container_width=True)
+    with colB:
+        clear_btn = st.button("Clear outputs", disabled=not bool(st.session_state.outputs), use_container_width=True)
+        if clear_btn:
+            st.session_state.outputs = {}
+            st.session_state.last_preview_key = None
+            st.rerun()
 
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="step"><b>5</b> Download</div>', unsafe_allow_html=True)
-    st.write("")
+    st.markdown("<hr/>", unsafe_allow_html=True)
 
-    # download panel is internal scroll
-    st.markdown('<div class="panel-scroll">', unsafe_allow_html=True)
+    # Outputs + Preview tabs
+    tab_files, tab_preview = st.tabs(["📦 Files", "👁️ Preview"])
 
-    outputs_ready = bool(st.session_state.outputs)
+    with tab_files:
+        if not st.session_state.outputs:
+            st.info("No outputs yet. Upload a file, choose a conversion, and click **Convert**.")
+        else:
+            st.success("Conversion complete. Download below.")
 
-    if not outputs_ready:
-        st.caption("Downloads will appear here after conversion.")
-        st.button("Download output", disabled=True)
-        st.button("Download ZIP", disabled=True)
-    else:
-        st.caption("Ready to download.")
-        for out_name, out_bytes in st.session_state.outputs.items():
+            # individual downloads
+            for out_name, out_bytes in st.session_state.outputs.items():
+                st.download_button(
+                    label=f"Download {out_name}",
+                    data=out_bytes,
+                    file_name=out_name,
+                    mime=mime_for(out_name),
+                    use_container_width=True,
+                    key=f"dl_{out_name}_{now_stamp()}",
+                )
+
+            # bundle zip
+            zname = f"{safe_filename(os.path.splitext(filename)[0])}_bundle_{now_stamp()}.zip" if filename else f"bundle_{now_stamp()}.zip"
             st.download_button(
-                label=f"Download {out_name}",
-                data=out_bytes,
-                file_name=out_name,
-                mime=mime_for(out_name),
-                key=f"dl_{out_name}_{now_stamp()}",
-                use_container_width=True
+                label="Download ALL as ZIP",
+                data=build_zip(st.session_state.outputs),
+                file_name=zname,
+                mime="application/zip",
+                use_container_width=True,
+                key=f"dl_zip_{now_stamp()}",
             )
 
-        zname = f"{safe_filename(os.path.splitext(filename)[0])}_all_{now_stamp()}.zip" if filename else f"bundle_{now_stamp()}.zip"
-        st.download_button(
-            label="Download ALL as ZIP",
-            data=build_zip(st.session_state.outputs),
-            file_name=zname,
-            mime="application/zip",
-            key=f"dl_zip_{now_stamp()}",
-            use_container_width=True
-        )
+    with tab_preview:
+        if not st.session_state.outputs:
+            st.caption("Nothing to preview yet.")
+        else:
+            # choose preview file
+            out_names = list(st.session_state.outputs.keys())
+            default_idx = 0
+            if st.session_state.last_preview_key in out_names:
+                default_idx = out_names.index(st.session_state.last_preview_key)
 
-    st.markdown("</div>", unsafe_allow_html=True)  # panel-scroll
-    st.markdown("</div>", unsafe_allow_html=True)  # card
+            pick = st.selectbox("Preview file", out_names, index=default_idx)
+            st.session_state.last_preview_key = pick
+            data = st.session_state.outputs[pick]
+
+            low = pick.lower()
+            if low.endswith(".txt"):
+                try:
+                    st.text_area("Text", data.decode("utf-8", errors="replace"), height=320)
+                except Exception:
+                    st.caption("Cannot decode this TXT file.")
+            elif low.endswith(".json"):
+                try:
+                    st.json(json.loads(data.decode("utf-8", errors="replace")))
+                except Exception:
+                    st.caption("Cannot parse JSON.")
+            elif low.endswith(".png"):
+                st.image(Image.open(io.BytesIO(data)))
+            elif low.endswith(".pdf"):
+                st.caption("PDF generated. (Streamlit preview varies by browser; download to view.)")
+            elif low.endswith(".xlsx"):
+                st.caption("Excel generated. Showing a small preview of first sheet (best-effort).")
+                try:
+                    xls = pd.ExcelFile(io.BytesIO(data))
+                    df = xls.parse(xls.sheet_names[0]).head(25)
+                    st.dataframe(df, use_container_width=True)
+                except Exception:
+                    st.caption("Preview not available for this XLSX.")
+            else:
+                st.caption("Preview not supported for this file type. Download it.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
-# Conversion execution (History NEVER auto-triggers)
+# CONVERSION EXECUTION
 # ============================================================
 if convert_btn and uploaded and task_key and file_bytes and filename:
     st.session_state.outputs = {}
@@ -864,7 +955,7 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
 
         elif task_key == "pdf_to_docx":
-            # High-fidelity try
+            # High fidelity first; fallback to hybrid text -> docx paragraphs
             try:
                 docx_bytes = pdf_to_docx_high_fidelity(file_bytes)
                 outputs[f"{base}.docx"] = docx_bytes
@@ -890,23 +981,20 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             except Exception:
                 tables = []
 
+            # OCR fallback for scanned PDFs
             if not tables:
                 imgs = pdf_render_pages_to_images(file_bytes, dpi=ocr_dpi, max_pages=max_pages)
                 ocr_tables: List[pd.DataFrame] = []
                 for im in imgs:
                     tbs, _lg = extract_table_from_image_webonly(
-                        im,
-                        lang_ui=ocr_lang,
-                        min_conf_0_100=min_conf,
-                        table_mode=table_mode,
-                        enhance=enhance,
-                        deskew=deskew
+                        im, lang_ui=ocr_lang, min_conf_0_100=min_conf,
+                        table_mode=table_mode, enhance=enhance, deskew=deskew
                     )
                     ocr_tables.extend(tbs)
                 tables = ocr_tables
 
             if not tables:
-                raise RuntimeError("No tables found in this PDF. Try increasing DPI, switching Table mode, or use a clearer scan.")
+                raise RuntimeError("No tables found. Try increasing DPI, switching Table mode, or use a clearer scan.")
 
             root = f"{base}_tables_{now_stamp()}"
             bundle = build_tables_bundle(tables, base=root)
@@ -921,45 +1009,9 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}_metadata.json"] = pdf_metadata_to_json(file_bytes)
 
         elif task_key == "pdf_searchable":
-            # Web-only searchable PDF is not perfect like ocrmypdf but works for search.
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.utils import ImageReader
-            from reportlab.lib.colors import Color
-
             conf01 = max(0.10, min(0.95, float(min_conf) / 100.0))
-            reader = _easyocr_reader(_ui_lang_to_easyocr(ocr_lang))
             imgs = pdf_render_pages_to_images(file_bytes, dpi=ocr_dpi, max_pages=max_pages)
-
-            buf = io.BytesIO()
-            c = canvas.Canvas(buf)
-            invisible = Color(0, 0, 0, alpha=0.01)
-
-            for page_img in imgs:
-                w_px, h_px = page_img.size
-                c.setPageSize((w_px, h_px))
-                c.drawImage(ImageReader(page_img), 0, 0, width=w_px, height=h_px, mask='auto')
-                arr = np.array(page_img.convert("RGB"))
-                results = reader.readtext(arr, detail=1)
-
-                c.setFillColor(invisible)
-                for box, text, conf in results:
-                    if float(conf) < conf01:
-                        continue
-                    if not text or not str(text).strip():
-                        continue
-                    xs = [p[0] for p in box]
-                    ys = [p[1] for p in box]
-                    x_min, x_max = float(min(xs)), float(max(xs))
-                    y_min, y_max = float(min(ys)), float(max(ys))
-                    pdf_x = x_min
-                    pdf_y = h_px - y_max
-                    font_size = max(6.0, min(24.0, (y_max - y_min) * 0.8))
-                    c.setFont("Helvetica", font_size)
-                    c.drawString(pdf_x, pdf_y, re.sub(r"\s+", " ", str(text))[:200])
-                c.showPage()
-
-            c.save()
-            outputs[f"{base}_searchable.pdf"] = buf.getvalue()
+            outputs[f"{base}_searchable.pdf"] = make_searchable_pdf_from_images(imgs, lang_ui=ocr_lang, conf01=conf01)
 
         # IMAGE
         elif task_key == "img_text_txt":
@@ -974,56 +1026,18 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
             outputs[f"{base}.pdf"] = buf.getvalue()
 
         elif task_key == "img_searchable_pdf":
-            # searchable PDF from single image (overlay text)
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.utils import ImageReader
-            from reportlab.lib.colors import Color
-
             conf01 = max(0.10, min(0.95, float(min_conf) / 100.0))
-            reader = _easyocr_reader(_ui_lang_to_easyocr(ocr_lang))
-            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            w_px, h_px = img.size
-            arr = np.array(img.convert("RGB"))
-            results = reader.readtext(arr, detail=1)
-
-            buf = io.BytesIO()
-            c = canvas.Canvas(buf, pagesize=(w_px, h_px))
-            c.drawImage(ImageReader(img), 0, 0, width=w_px, height=h_px, mask='auto')
-            invisible = Color(0, 0, 0, alpha=0.01)
-            c.setFillColor(invisible)
-
-            for box, text, conf in results:
-                if float(conf) < conf01:
-                    continue
-                if not text or not str(text).strip():
-                    continue
-                xs = [p[0] for p in box]
-                ys = [p[1] for p in box]
-                x_min, x_max = float(min(xs)), float(max(xs))
-                y_min, y_max = float(min(ys)), float(max(ys))
-                pdf_x = x_min
-                pdf_y = h_px - y_max
-                font_size = max(6.0, min(24.0, (y_max - y_min) * 0.8))
-                c.setFont("Helvetica", font_size)
-                c.drawString(pdf_x, pdf_y, re.sub(r"\s+", " ", str(text))[:200])
-
-            c.showPage()
-            c.save()
-
-            outputs[f"{base}_searchable.pdf"] = buf.getvalue()
+            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            outputs[f"{base}_searchable.pdf"] = make_searchable_pdf_from_images([im], lang_ui=ocr_lang, conf01=conf01)
 
         elif task_key == "img_tables":
             im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
             tables, _lg = extract_table_from_image_webonly(
-                im,
-                lang_ui=ocr_lang,
-                min_conf_0_100=min_conf,
-                table_mode=table_mode,
-                enhance=enhance,
-                deskew=deskew
+                im, lang_ui=ocr_lang, min_conf_0_100=min_conf,
+                table_mode=table_mode, enhance=enhance, deskew=deskew
             )
             if not tables:
-                raise RuntimeError("No tables found in this image. Try borderless mode, enable Enhance/Deskew, or use a clearer image.")
+                raise RuntimeError("No tables found. Try Borderless mode, enable Enhance/Deskew, or use a clearer image.")
 
             root = f"{base}_tables_{now_stamp()}"
             bundle = build_tables_bundle(tables, base=root)
@@ -1095,8 +1109,26 @@ if convert_btn and uploaded and task_key and file_bytes and filename:
 
         st.session_state.outputs = outputs
         push_history(task_label=task_label, task_key=task_key, fname=filename)
-        st.success("Conversion completed. Downloads are ready.")
+
+        st.success("Done — outputs are ready in the Files tab.")
 
     except Exception as e:
         st.session_state.outputs = {}
         st.error(str(e))
+
+
+# ============================================================
+# RECENT CONVERSIONS (clean + optional)
+# ============================================================
+st.markdown("<div class='spacer'></div>", unsafe_allow_html=True)
+
+with st.expander("Recent conversions (optional)", expanded=False):
+    if not st.session_state.history:
+        st.caption("No history yet.")
+    else:
+        dfh = pd.DataFrame(st.session_state.history)
+        dfh = dfh[["time", "file", "task"]]
+        st.dataframe(dfh, use_container_width=True, hide_index=True)
+        st.caption("History is informational. It does not auto-run anything.")
+
+
