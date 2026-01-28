@@ -4,7 +4,7 @@ import io
 import json
 import zipfile
 from datetime import datetime
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 import pandas as pd
@@ -14,10 +14,10 @@ from PIL import Image
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-st.set_page_config(page_title="DocFlow Converter", layout="wide")
+st.set_page_config(page_title="DocFlow Converter (MVP)", layout="wide")
 
 # ============================================================
-# CLEAN "MVP" WEBSITE CSS (minimal text, premium spacing)
+# CLEAN MVP CSS (premium but minimal)
 # ============================================================
 st.markdown(
     """
@@ -119,14 +119,14 @@ st.markdown(
         <div class="logo"></div>
         <div>
           <div class="brand">DocFlow Converter</div>
-          <div class="sub">Reliable conversions • Minimal UI • Web-only</div>
+          <div class="sub">Phase-1 MVP • Reliable conversions • FAST & HQ DOCX modes</div>
         </div>
       </div>
       <div class="chipRow">
-        <div class="chip">PDF → Word</div>
-        <div class="chip">Tables → Excel</div>
+        <div class="chip">FAST DOCX</div>
+        <div class="chip">HQ DOCX (page-capped)</div>
+        <div class="chip">Tables → Excel ZIP</div>
         <div class="chip">OCR Text</div>
-        <div class="chip">ZIP Exports</div>
       </div>
     </div>
     """,
@@ -271,19 +271,64 @@ def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple
     return build_zip(files), len(imgs)
 
 
-def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
+# ============================================================
+# DOCX CONVERSION (FAST + HQ page-capped)
+# ============================================================
+def pdf_to_docx_fast_text(pdf_bytes: bytes, max_pages: int, dpi: int) -> bytes:
+    """
+    FAST DOCX: extract text (hybrid) and write to docx.
+    Formatting is basic but speed is excellent.
+    """
+    from docx import Document
+    pages = pdf_hybrid_text_extract(pdf_bytes, max_pages=max_pages, dpi=dpi)
+
+    doc = Document()
+    for p in pages:
+        p = (p or "").strip()
+        if not p:
+            continue
+        for line in p.splitlines():
+            line = line.strip()
+            if line:
+                doc.add_paragraph(line)
+        doc.add_paragraph("")
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def pdf_to_docx_high_fidelity(pdf_bytes: bytes, max_pages: int = 20) -> bytes:
+    """
+    High fidelity conversion using pdf2docx (can be slow).
+    We cap pages to avoid endless runs.
+    """
     from pdf2docx import Converter
+    import fitz
+
     tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     in_path = f"/tmp/in_{tmp_id}.pdf"
     out_path = f"/tmp/out_{tmp_id}.docx"
+
     with open(in_path, "wb") as f:
         f.write(pdf_bytes)
+
     try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        page_count = doc.page_count
+        doc.close()
+
+        end = min(max_pages, page_count) - 1
+        if end < 0:
+            raise RuntimeError("PDF has no pages.")
+
         cv = Converter(in_path)
-        cv.convert(out_path, start=0, end=None)
+        cv.convert(out_path, start=0, end=end)
         cv.close()
+
         with open(out_path, "rb") as f:
             return f.read()
+
     finally:
         for p in (in_path, out_path):
             try:
@@ -335,12 +380,13 @@ def df_to_json_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
 
 
 def build_tables_zip(tables: List[pd.DataFrame], base: str) -> Tuple[str, bytes]:
-    # ZIP includes XLSX + CSV/JSON + manifest
+    """
+    ZIP includes XLSX + CSV/JSON + manifest
+    """
     from openpyxl.styles import Alignment
 
     files: Dict[str, bytes] = {}
 
-    # Excel
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         for i, df in enumerate(tables, start=1):
@@ -367,7 +413,7 @@ def build_tables_zip(tables: List[pd.DataFrame], base: str) -> Tuple[str, bytes]
 
 
 # ============================================================
-# EXCEL -> PDF (for MVP)
+# EXCEL -> PDF (MVP)
 # ============================================================
 def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 80, max_cols: int = 14) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
@@ -424,21 +470,22 @@ def push_history(task_label: str, fname: str):
 
 
 # ============================================================
-# SIDEBAR (minimal)
+# SIDEBAR (minimal but important for speed controls)
 # ============================================================
 with st.sidebar:
     st.markdown("### Settings")
-    max_pages = st.slider("Max PDF pages", 1, 80, 12)
+    max_pages = st.slider("Max PDF pages", 1, 200, 25)
     ocr_dpi = st.slider("OCR quality (DPI)", 200, 400, 260, step=10)
-    st.caption("MVP defaults are safe.")
+    st.caption("Tip: HQ DOCX is page-capped to avoid endless runs.")
 
 
 # ============================================================
-# MVP TASKS (only reliable)
+# TASKS
 # ============================================================
 TASKS_BY_TYPE = {
     "PDF": [
-        ("PDF → Editable Word (DOCX)", "pdf_docx"),
+        ("PDF → Word (FAST, Text-based) (DOCX)", "pdf_docx_fast"),
+        ("PDF → Word (HQ Layout, First N pages) (DOCX)", "pdf_docx_hq"),
         ("PDF Tables → Excel Bundle (ZIP)", "pdf_tables_zip"),
         ("PDF → Text (Hybrid OCR) (TXT)", "pdf_txt"),
         ("PDF → Pages (PNG ZIP)", "pdf_pngzip"),
@@ -455,7 +502,6 @@ TASKS_BY_TYPE = {
         ("Word → Text (TXT)", "docx_txt"),
     ],
 }
-
 
 # ============================================================
 # MAIN LAYOUT
@@ -506,7 +552,13 @@ with left:
             task_label = st.selectbox("Conversion", labels, label_visibility="collapsed")
             task_key = lab_to_key[task_label]
 
-            st.markdown("<div class='muted'>Click Convert once. Downloads appear on the right.</div>", unsafe_allow_html=True)
+            # user guidance (short)
+            if task_key == "pdf_docx_hq":
+                st.markdown(f"<div class='muted'>HQ DOCX converts only first <b>{max_pages}</b> pages to keep it fast.</div>", unsafe_allow_html=True)
+            elif task_key == "pdf_docx_fast":
+                st.markdown(f"<div class='muted'>FAST DOCX uses text/OCR extraction. Very quick, basic formatting.</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='muted'>Click Convert once. Downloads appear on the right.</div>", unsafe_allow_html=True)
 
     else:
         filename, file_bytes, ftype, base = None, None, "—", "output"
@@ -531,49 +583,69 @@ with right:
 
     st.markdown("<hr/>", unsafe_allow_html=True)
 
-    # Execute
+    # Execute conversion
     if convert_btn and uploaded and task_key and file_bytes and filename:
         st.session_state.outputs = {}
         try:
             with st.spinner("Converting…"):
                 outputs: Dict[str, bytes] = {}
 
-                if task_key == "pdf_docx":
-                    outputs[f"{base}.docx"] = pdf_to_docx_high_fidelity(file_bytes)
+                # PDF -> DOCX
+                if task_key == "pdf_docx_fast":
+                    outputs[f"{base}_FAST.docx"] = pdf_to_docx_fast_text(
+                        file_bytes, max_pages=max_pages, dpi=ocr_dpi
+                    )
 
+                elif task_key == "pdf_docx_hq":
+                    outputs[f"{base}_HQ_first{max_pages}.docx"] = pdf_to_docx_high_fidelity(
+                        file_bytes, max_pages=max_pages
+                    )
+
+                # PDF Tables -> ZIP
                 elif task_key == "pdf_tables_zip":
                     tables = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
                     if not tables:
-                        raise RuntimeError("No tables found (text-layer). If this PDF is scanned, OCR-table mode is next upgrade.")
-                    zip_name, zip_bytes = build_tables_zip(tables, base=f"{base}_tables_{now_stamp()}")
+                        raise RuntimeError(
+                            "No tables found (text-layer). If this PDF is scanned, OCR-table extraction is next upgrade."
+                        )
+                    zip_name, zip_bytes = build_tables_zip(
+                        tables, base=f"{base}_tables_{now_stamp()}"
+                    )
                     outputs[zip_name] = zip_bytes
 
+                # PDF -> TXT
                 elif task_key == "pdf_txt":
                     pages = pdf_hybrid_text_extract(file_bytes, max_pages=max_pages, dpi=ocr_dpi)
                     txt = "\n\n".join([p.strip() for p in pages if p is not None]).strip()
                     outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
 
+                # PDF pages -> PNG ZIP
                 elif task_key == "pdf_pngzip":
                     z, _ = pdf_to_images_zip(file_bytes, max_pages=max_pages, dpi=220)
                     outputs[f"{base}_pages_{now_stamp()}.zip"] = z
 
+                # PDF metadata
                 elif task_key == "pdf_meta":
                     outputs[f"{base}_metadata.json"] = pdf_metadata_to_json(file_bytes)
 
+                # IMAGE -> TXT OCR
                 elif task_key == "img_txt":
                     im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
                     txt = ocr_image_to_text(im)
                     outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
 
+                # IMAGE -> PDF
                 elif task_key == "img_pdf":
                     im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
                     buf = io.BytesIO()
                     im.save(buf, format="PDF")
                     outputs[f"{base}.pdf"] = buf.getvalue()
 
+                # EXCEL -> PDF
                 elif task_key == "xlsx_pdf":
                     outputs[f"{base}.pdf"] = excel_to_pdf_bytes(file_bytes)
 
+                # WORD -> TXT
                 elif task_key == "docx_txt":
                     from docx import Document
                     doc = Document(io.BytesIO(file_bytes))
@@ -605,17 +677,9 @@ with right:
                 key=f"dl_{out_name}_{now_stamp()}",
             )
 
-        # If multiple outputs ever added later
-        if len(st.session_state.outputs) > 1:
-            zip_name = f"{base}_bundle_{now_stamp()}.zip"
-            st.download_button(
-                label="Download ALL as ZIP",
-                data=build_zip(st.session_state.outputs),
-                file_name=zip_name,
-                mime="application/zip",
-                use_container_width=True,
-                key=f"dl_zip_{now_stamp()}",
-            )
+        if st.button("Clear output", use_container_width=True):
+            st.session_state.outputs = {}
+            st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
