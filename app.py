@@ -3,6 +3,7 @@ import re
 import io
 import json
 import zipfile
+import base64
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -11,49 +12,48 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 
-
 # ============================================================
-# PAGE
+# PAGE CONFIG
 # ============================================================
 st.set_page_config(page_title="DocFlow Converter", layout="wide")
 
 # ============================================================
-# STYLES (website feel)
+# PREMIUM CSS (website-like)
 # ============================================================
 st.markdown(
     """
     <style>
-      html, body, [class*="stApp"] {
+      html, body, [class*="stApp"]{
         background: radial-gradient(1100px 800px at 10% 0%, rgba(99,102,241,0.18), transparent 55%),
                     radial-gradient(900px 700px at 90% 10%, rgba(16,185,129,0.14), transparent 55%),
                     linear-gradient(180deg, #f7f8fb, #f3f4f6);
         color: #0f172a;
       }
-      .block-container { max-width: 1220px; padding-top: 1rem; padding-bottom: 1.6rem; }
+      .block-container{ max-width: 1260px; padding-top: 0.9rem; padding-bottom: 1.3rem; }
       #MainMenu, footer { visibility: hidden; }
       header { visibility: hidden; }
 
-      /* Top nav */
-      .nav {
+      .nav{
         display:flex; align-items:center; justify-content:space-between;
-        padding: 14px 16px;
+        padding: 12px 14px;
         border-radius: 18px;
         border: 1px solid rgba(15,23,42,0.08);
         background: rgba(255,255,255,0.72);
         backdrop-filter: blur(10px);
         box-shadow: 0 10px 26px rgba(15,23,42,0.06);
-        margin-bottom: 14px;
+        margin-bottom: 12px;
       }
-      .navL { display:flex; align-items:center; gap:12px; }
-      .logo {
-        width: 42px; height: 42px; border-radius: 14px;
+      .navL{ display:flex; align-items:center; gap:12px; }
+      .logo{
+        width: 40px; height: 40px; border-radius: 14px;
         background: linear-gradient(135deg, rgba(99,102,241,0.95), rgba(16,185,129,0.92));
         box-shadow: 0 12px 22px rgba(99,102,241,0.18);
       }
-      .brand { font-size: 16px; font-weight: 900; margin:0; }
-      .subtitle { margin-top:2px; font-size: 12px; color: rgba(15,23,42,0.62); }
-      .navR { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-      .chip {
+      .brand{ font-size: 16px; font-weight: 900; margin:0; }
+      .subtitle{ margin-top:2px; font-size: 12px; color: rgba(15,23,42,0.62); }
+
+      .chips{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+      .chip{
         font-size: 12px; padding: 7px 10px;
         border-radius: 999px;
         border: 1px solid rgba(15,23,42,0.10);
@@ -61,73 +61,93 @@ st.markdown(
         color: rgba(15,23,42,0.72);
       }
 
-      /* Panels */
-      .panel {
+      .bar{
         border-radius: 18px;
         border: 1px solid rgba(15,23,42,0.08);
         background: rgba(255,255,255,0.72);
         backdrop-filter: blur(10px);
         box-shadow: 0 12px 28px rgba(15,23,42,0.06);
-        padding: 14px 14px;
-      }
-      .phead { display:flex; align-items:center; justify-content:space-between; margin-bottom: 10px; }
-      .ptitle { font-size: 13px; font-weight: 900; margin:0; color: rgba(15,23,42,0.90); }
-      .psub { font-size: 12px; color: rgba(15,23,42,0.58); margin:0; }
-
-      /* File card */
-      .filecard {
-        border-radius: 16px;
-        border: 1px solid rgba(15,23,42,0.08);
-        background: rgba(15,23,42,0.02);
         padding: 12px 12px;
+      }
+
+      .sectionTitle{
+        font-size: 12px;
+        color: rgba(15,23,42,0.65);
+        font-weight: 900;
+        letter-spacing: .2px;
+        margin: 0 0 8px 0;
+      }
+
+      .filecard{
+        border-radius: 16px;
+        border: 1px solid rgba(15,23,42,0.10);
+        background: rgba(15,23,42,0.02);
+        padding: 10px 10px;
         margin-top: 10px;
       }
-      .filetop { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-      .fname { font-weight: 900; font-size: 13px; }
-      .fmeta { font-size: 12px; color: rgba(15,23,42,0.62); }
-      .badgeRow { display:flex; gap:8px; flex-wrap:wrap; margin-top: 8px; }
-      .badge {
+      .filetop{ display:flex; justify-content:space-between; gap:10px; }
+      .fname{ font-size: 13px; font-weight: 900; }
+      .fmeta{ font-size: 12px; color: rgba(15,23,42,0.62); margin-top:2px; }
+      .pill{
         font-size: 12px; padding: 6px 10px;
         border-radius: 999px;
         border: 1px solid rgba(15,23,42,0.10);
-        background: rgba(255,255,255,0.55);
+        background: rgba(255,255,255,0.65);
         color: rgba(15,23,42,0.72);
+        height: fit-content;
       }
 
-      /* Conversion tiles */
-      .tiles { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; margin-top: 10px; }
-      .tile {
+      .formats{
+        display:flex;
+        flex-direction:column;
+        gap:10px;
+        margin-top: 4px;
+      }
+      .fmt{
         border-radius: 16px;
         border: 1px solid rgba(15,23,42,0.10);
-        background: rgba(255,255,255,0.70);
-        padding: 12px 12px;
+        padding: 10px 10px;
+        background: rgba(255,255,255,0.65);
         box-shadow: 0 10px 20px rgba(15,23,42,0.04);
       }
-      .tile h4 { margin:0; font-size: 13px; font-weight: 900; }
-      .tile p { margin:6px 0 0 0; font-size: 12px; color: rgba(15,23,42,0.60); }
-
-      /* Empty state */
-      .empty {
-        border-radius: 16px;
-        border: 1px dashed rgba(15,23,42,0.18);
-        background: rgba(255,255,255,0.60);
-        padding: 14px 14px;
+      .fmtDisabled{
+        opacity: .40;
+        filter: grayscale(.2);
       }
-      .empty h4 { margin:0; font-size: 13px; font-weight: 900; }
-      .empty p { margin:6px 0 0 0; font-size: 12px; color: rgba(15,23,42,0.62); }
-
-      /* Widget tweaks */
-      div[data-testid="stFileUploader"] section {
-        border-radius: 16px !important;
-        border: 1px dashed rgba(15,23,42,0.22) !important;
-        background: rgba(255,255,255,0.70) !important;
+      .fmtTitle{
+        font-size: 13px;
+        font-weight: 900;
+        margin:0;
       }
-      .stButton button, .stDownloadButton button {
+      .fmtSub{
+        font-size: 12px;
+        color: rgba(15,23,42,0.62);
+        margin-top: 4px;
+        margin-bottom: 0;
+      }
+
+      .stButton button, .stDownloadButton button{
         border-radius: 14px !important;
         font-weight: 900 !important;
         padding: 10px 14px !important;
       }
-      hr { border: none; height: 1px; background: rgba(15,23,42,0.08); margin: 12px 0; }
+      div[data-testid="stFileUploader"] section{
+        border-radius: 16px !important;
+        border: 1px dashed rgba(15,23,42,0.22) !important;
+        background: rgba(255,255,255,0.70) !important;
+      }
+      hr{
+        border: none;
+        height: 1px;
+        background: rgba(15,23,42,0.08);
+        margin: 10px 0;
+      }
+      .muted{ color: rgba(15,23,42,0.62); font-size: 12px; }
+
+      /* Compact expander */
+      details summary{
+        font-weight: 900;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -140,13 +160,13 @@ st.markdown(
         <div class="logo"></div>
         <div>
           <div class="brand">DocFlow Converter</div>
-          <div class="subtitle">Fast, clean file conversions — web-only</div>
+          <div class="subtitle">Upload → Auto Detect → Choose Output → Download</div>
         </div>
       </div>
-      <div class="navR">
-        <div class="chip">OCR Tables → Excel</div>
-        <div class="chip">PDF → Editable Word</div>
-        <div class="chip">ZIP Bundles</div>
+      <div class="chips">
+        <div class="chip">Website-style UI</div>
+        <div class="chip">One-click convert</div>
+        <div class="chip">Auto-download + fallback</div>
       </div>
     </div>
     """,
@@ -211,8 +231,28 @@ def mime_for(name: str) -> str:
     return "application/octet-stream"
 
 
+def auto_download_bytes(file_name: str, data: bytes, mime: str):
+    """
+    Attempts to auto-trigger a browser download via HTML/JS.
+    Some browsers may block it; we always provide fallback download button too.
+    """
+    b64 = base64.b64encode(data).decode()
+    html = f"""
+    <html>
+      <body>
+        <a id="dl" download="{file_name}" href="data:{mime};base64,{b64}"></a>
+        <script>
+          const a = document.getElementById('dl');
+          a.click();
+        </script>
+      </body>
+    </html>
+    """
+    st.components.v1.html(html, height=0)
+
+
 # ============================================================
-# OCR / PDF (cloud-safe)
+# OCR/PDF (cloud-safe: EasyOCR + PyMuPDF + pdfplumber + pdf2docx)
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def _easyocr_reader(lang_code: str):
@@ -220,8 +260,14 @@ def _easyocr_reader(lang_code: str):
     return easyocr.Reader([lang_code], gpu=False)
 
 
-def _ui_lang_to_easyocr(ui_lang: str) -> str:
-    return "en" if ui_lang == "eng" else "en"
+def ocr_image_to_text(pil_img: Image.Image, lang_ui: str = "eng") -> str:
+    reader = _easyocr_reader("en")
+    arr = np.array(pil_img.convert("RGB"))
+    try:
+        lines = reader.readtext(arr, detail=0, paragraph=True)
+    except TypeError:
+        lines = reader.readtext(arr, detail=0)
+    return "\n".join([t.strip() for t in lines if t and str(t).strip()]).strip()
 
 
 def pdf_textlayer_extract(pdf_bytes: bytes, max_pages: int) -> List[str]:
@@ -244,17 +290,7 @@ def pdf_render_pages_to_images(pdf_bytes: bytes, dpi: int, max_pages: int) -> Li
     return imgs
 
 
-def ocr_image_to_text(pil_img: Image.Image, lang_ui: str = "eng") -> str:
-    reader = _easyocr_reader(_ui_lang_to_easyocr(lang_ui))
-    arr = np.array(pil_img.convert("RGB"))
-    try:
-        lines = reader.readtext(arr, detail=0, paragraph=True)
-    except TypeError:
-        lines = reader.readtext(arr, detail=0)
-    return "\n".join([t.strip() for t in lines if t and str(t).strip()]).strip()
-
-
-def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, lang: str, dpi: int) -> List[str]:
+def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, dpi: int) -> List[str]:
     layer = pdf_textlayer_extract(pdf_bytes, max_pages=max_pages)
     needs_ocr = []
     for t in layer:
@@ -268,23 +304,13 @@ def pdf_hybrid_text_extract(pdf_bytes: bytes, max_pages: int, lang: str, dpi: in
     for i, base in enumerate(layer):
         if i < len(imgs) and needs_ocr[i]:
             try:
-                txt = ocr_image_to_text(imgs[i], lang_ui=lang)
+                txt = ocr_image_to_text(imgs[i], lang_ui="eng")
                 out.append(txt if txt else base)
             except Exception:
                 out.append(base)
         else:
             out.append(base)
     return out
-
-
-def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple[bytes, int]:
-    imgs = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
-    files = {}
-    for i, im in enumerate(imgs, start=1):
-        buf = io.BytesIO()
-        im.save(buf, format="PNG")
-        files[f"pages/page_{i:03d}.png"] = buf.getvalue()
-    return build_zip(files), len(imgs)
 
 
 def pdf_metadata_to_json(pdf_bytes: bytes) -> bytes:
@@ -297,9 +323,39 @@ def pdf_metadata_to_json(pdf_bytes: bytes) -> bytes:
     return json.dumps(out, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-# ============================================================
-# TABLES
-# ============================================================
+def pdf_to_images_zip(pdf_bytes: bytes, max_pages: int, dpi: int = 220) -> Tuple[bytes, int]:
+    imgs = pdf_render_pages_to_images(pdf_bytes, dpi=dpi, max_pages=max_pages)
+    files = {}
+    for i, im in enumerate(imgs, start=1):
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        files[f"pages/page_{i:03d}.png"] = buf.getvalue()
+    return build_zip(files), len(imgs)
+
+
+def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
+    from pdf2docx import Converter
+    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    in_path = f"/tmp/in_{tmp_id}.pdf"
+    out_path = f"/tmp/out_{tmp_id}.docx"
+    with open(in_path, "wb") as f:
+        f.write(pdf_bytes)
+    try:
+        cv = Converter(in_path)
+        cv.convert(out_path, start=0, end=None)
+        cv.close()
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (in_path, out_path):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+
+# TABLES (text-layer)
 def normalize_cell_text_clean(val):
     if val is None:
         return val
@@ -367,32 +423,17 @@ def build_tables_bundle(tables: List[pd.DataFrame], base: str) -> Dict[str, byte
     return files
 
 
-def pdf_to_docx_high_fidelity(pdf_bytes: bytes) -> bytes:
-    from pdf2docx import Converter
-    tmp_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
-    in_path = f"/tmp/in_{tmp_id}.pdf"
-    out_path = f"/tmp/out_{tmp_id}.docx"
-    with open(in_path, "wb") as f:
-        f.write(pdf_bytes)
-    try:
-        cv = Converter(in_path)
-        cv.convert(out_path, start=0, end=None)
-        cv.close()
-        with open(out_path, "rb") as f:
-            return f.read()
-    finally:
-        for p in (in_path, out_path):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+# ============================================================
+# BASIC Office conversions (keep minimal here)
+# ============================================================
+def docx_to_plain_text(docx_bytes: bytes) -> str:
+    from docx import Document
+    doc = Document(io.BytesIO(docx_bytes))
+    parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+    return "\n".join(parts).strip()
 
 
-# ============================================================
-# Office conversions
-# ============================================================
-def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 90, max_cols: int = 14) -> bytes:
+def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 80, max_cols: int = 14) -> bytes:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
     from reportlab.lib import colors
@@ -427,124 +468,90 @@ def excel_to_pdf_bytes(xlsx_bytes: bytes, max_rows: int = 90, max_cols: int = 14
     return buf.getvalue()
 
 
-def excel_to_word_docx_bytes(xlsx_bytes: bytes, max_rows: int = 120, max_cols: int = 14) -> bytes:
-    from docx import Document
-    from docx.shared import Pt
-
-    xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
-    doc = Document()
-    doc.styles["Normal"].font.name = "Calibri"
-    doc.styles["Normal"].font.size = Pt(11)
-
-    for sheet in xls.sheet_names:
-        df = xls.parse(sheet).iloc[:max_rows, :max_cols]
-        doc.add_heading(sheet, level=2)
-        table = doc.add_table(rows=1, cols=len(df.columns))
-        hdr = table.rows[0].cells
-        for j, c in enumerate(df.columns.astype(str).tolist()):
-            hdr[j].text = c
-
-        for _, row in df.astype(str).iterrows():
-            cells = table.add_row().cells
-            for j, val in enumerate(row.tolist()):
-                cells[j].text = val
-        doc.add_paragraph("")
-
-    out = io.BytesIO()
-    doc.save(out)
-    return out.getvalue()
-
-
-def word_to_excel_tables(docx_bytes: bytes) -> Optional[bytes]:
-    from docx import Document
-    doc = Document(io.BytesIO(docx_bytes))
-    if not doc.tables:
-        return None
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        for i, t in enumerate(doc.tables, start=1):
-            rows = []
-            for r in t.rows:
-                rows.append([c.text.strip() for c in r.cells])
-            pd.DataFrame(rows).to_excel(writer, sheet_name=f"Table_{i}"[:31], index=False, header=False)
-    return out.getvalue()
-
-
-def docx_to_plain_text(docx_bytes: bytes) -> str:
-    from docx import Document
-    doc = Document(io.BytesIO(docx_bytes))
-    parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
-    return "\n".join(parts).strip()
-
-
 # ============================================================
 # STATE
 # ============================================================
 if "outputs" not in st.session_state:
-    st.session_state.outputs = {}
+    st.session_state.outputs = {}  # name->bytes
 
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []  # list of dicts
+
+if "pending_autodl" not in st.session_state:
+    st.session_state.pending_autodl = None  # {"name":..., "bytes":..., "mime":...}
 
 
-def push_history(task_label: str, task_key: str, fname: str):
+def push_history(task_label: str, fname: str):
     st.session_state.history.insert(0, {
         "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
         "file": fname,
         "task": task_label,
-        "task_key": task_key,
     })
     st.session_state.history = st.session_state.history[:80]
 
 
 # ============================================================
-# Sidebar (minimal)
+# SETTINGS (kept light)
 # ============================================================
 with st.sidebar:
     st.markdown("### Settings")
     with st.expander("Advanced", expanded=False):
-        ocr_lang = st.selectbox("OCR language", ["eng"], index=0)
         max_pages = st.slider("Max PDF pages", 1, 80, 12)
         ocr_dpi = st.slider("OCR DPI", 200, 400, 260, step=10)
-    st.caption("Keep defaults unless the scan is unclear.")
+    st.caption("Defaults are fine for most files.")
+
 
 # ============================================================
-# Tasks
+# FORMAT MODEL (ALL outputs always shown; available highlighted)
 # ============================================================
-TASKS_BY_TYPE = {
-    "PDF": [
-        ("PDF → Editable Word (DOCX)", "pdf_to_docx"),
-        ("PDF Tables → Excel/CSV/JSON (ZIP)", "pdf_tables"),
-        ("PDF Text (Hybrid OCR) → TXT", "pdf_text_txt"),
-        ("PDF Pages → PNG (ZIP)", "pdf_pages_png"),
-        ("PDF Metadata → JSON", "pdf_meta_json"),
-    ],
-    "IMAGE": [
-        ("Image OCR → TXT", "img_text_txt"),
-        ("Image Table → Excel/CSV/JSON (ZIP)", "img_tables"),  # placeholder - can add later
-        ("Image → PDF", "img_to_pdf"),
-    ],
-    "EXCEL": [
-        ("Excel → PDF", "xlsx_to_pdf"),
-        ("Excel → Word (DOCX)", "xlsx_to_docx"),
-    ],
-    "WORD": [
-        ("Word → TXT", "docx_to_txt"),
-        ("Word Tables → Excel (XLSX)", "docx_tables_to_xlsx"),
-    ],
-}
+# Each option is an "output format" representation.
+# We'll decide availability by input type.
+FORMAT_CATALOG = [
+    # title, subtitle, id
+    ("PDF → Editable Word (DOCX)", "Best for editable documents", "pdf_docx"),
+    ("PDF Tables → Excel (XLSX + ZIP)", "Extract schedules/tables to Excel", "pdf_tables"),
+    ("PDF Text → TXT", "OCR/hybrid plain text", "pdf_txt"),
+    ("PDF Pages → PNG (ZIP)", "Export pages as images", "pdf_pngzip"),
+    ("PDF Metadata → JSON", "Technical PDF info", "pdf_meta"),
+
+    ("Image OCR → TXT", "Scan images into text", "img_txt"),
+    ("Image → PDF", "Wrap image into PDF", "img_pdf"),
+
+    ("Word → TXT", "Extract paragraphs into text", "docx_txt"),
+
+    ("Excel → PDF", "Printable PDF preview", "xlsx_pdf"),
+
+    # You can expand later:
+    # ("PPT → Text (ZIP)", "Extract slide text", "ppt_txt"),
+    # ("PPT → Images (ZIP)", "Extract embedded images", "ppt_imgzip"),
+]
+
+
+def available_for_input(ftype: str) -> Dict[str, bool]:
+    avail = {k: False for _, _, k in FORMAT_CATALOG}
+    if ftype == "PDF":
+        for k in ["pdf_docx", "pdf_tables", "pdf_txt", "pdf_pngzip", "pdf_meta"]:
+            avail[k] = True
+    elif ftype == "IMAGE":
+        for k in ["img_txt", "img_pdf"]:
+            avail[k] = True
+    elif ftype == "WORD":
+        for k in ["docx_txt"]:
+            avail[k] = True
+    elif ftype == "EXCEL":
+        for k in ["xlsx_pdf"]:
+            avail[k] = True
+    return avail
+
 
 # ============================================================
-# Layout
+# TOP BAR LAYOUT (website converter bar)
 # ============================================================
-colL, colR = st.columns([1.15, 1.0], gap="large")
+col_upload, col_formats, col_download = st.columns([1.05, 1.35, 0.95], gap="large")
 
-with colL:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="phead"><div><div class="ptitle">Upload</div><div class="psub">Drag & drop your file</div></div></div>',
-        unsafe_allow_html=True
-    )
+with col_upload:
+    st.markdown('<div class="bar">', unsafe_allow_html=True)
+    st.markdown('<div class="sectionTitle">UPLOAD & DETECT</div>', unsafe_allow_html=True)
 
     uploaded = st.file_uploader(
         "Upload",
@@ -566,101 +573,156 @@ with colL:
                   <div class="fname">{filename}</div>
                   <div class="fmeta">{ftype} • {len(file_bytes)/1024:.1f} KB</div>
                 </div>
-                <div class="badge">{ftype}</div>
-              </div>
-              <div class="badgeRow">
-                <div class="badge">High-quality Word conversion</div>
-                <div class="badge">Table extraction → Excel</div>
-                <div class="badge">ZIP downloads</div>
+                <div class="pill">{ftype}</div>
               </div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
-
-        st.markdown("<hr/>", unsafe_allow_html=True)
-        st.markdown(
-            '<div class="phead"><div><div class="ptitle">Choose conversion</div><div class="psub">Recommended options for your file</div></div></div>',
-            unsafe_allow_html=True
-        )
-
-        opts = TASKS_BY_TYPE.get(ftype, [])
-        if not opts:
-            st.info("No conversions available for this file type.")
-            task_label, task_key = None, None
-        else:
-            # tiles (primary), dropdown (fallback)
-            tiles = opts[:4]
-            tile_cols = st.columns(2)
-            selected = st.session_state.get("selected_task_key", None)
-
-            for i, (lab, key) in enumerate(tiles):
-                with tile_cols[i % 2]:
-                    st.markdown('<div class="tile">', unsafe_allow_html=True)
-                    st.markdown(f"<h4>{lab}</h4>", unsafe_allow_html=True)
-                    st.markdown("<p>One-click conversion with clean outputs.</p>", unsafe_allow_html=True)
-                    if st.button("Select", key=f"pick_{key}", use_container_width=True):
-                        st.session_state.selected_task_key = key
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-            st.markdown("<div class='spacer'></div>", unsafe_allow_html=True)
-
-            # dropdown fallback shows full list
-            label_to_key = dict(opts)
-            keys = [k for _, k in opts]
-            default_idx = 0
-            if st.session_state.get("selected_task_key") in keys:
-                default_idx = keys.index(st.session_state.get("selected_task_key"))
-
-            task_label = st.selectbox("All conversions", [l for l, _ in opts], index=default_idx)
-            task_key = label_to_key.get(task_label)
-
     else:
         filename, file_bytes, ftype, base = None, None, "—", "output"
-        task_label, task_key = None, None
-
-        st.markdown(
-            """
-            <div class="empty">
-              <h4>Start by uploading a file</h4>
-              <p>PDF, images, Word, Excel — then choose conversion and download instantly.</p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown('<div class="muted">Upload a file to unlock conversions.</div>', unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-with colR:
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="phead"><div><div class="ptitle">Output</div><div class="psub">Convert & download</div></div></div>',
-        unsafe_allow_html=True
-    )
 
-    convert_disabled = not (uploaded and task_key)
-    c1, c2 = st.columns([0.7, 0.3])
-    with c1:
-        convert_btn = st.button("Convert", type="primary", disabled=convert_disabled, use_container_width=True)
-    with c2:
-        clear_btn = st.button("Clear", disabled=not bool(st.session_state.outputs), use_container_width=True)
-        if clear_btn:
+with col_formats:
+    st.markdown('<div class="bar">', unsafe_allow_html=True)
+    st.markdown('<div class="sectionTitle">OUTPUT FORMATS (ALL) • AVAILABLE HIGHLIGHTED</div>', unsafe_allow_html=True)
+
+    avail_map = available_for_input(ftype) if filename else {k: False for _, _, k in FORMAT_CATALOG}
+
+    st.markdown('<div class="formats">', unsafe_allow_html=True)
+
+    # Render format cards + buttons
+    for title, sub, key in FORMAT_CATALOG:
+        is_avail = avail_map.get(key, False)
+        cls = "fmt" if is_avail else "fmt fmtDisabled"
+        st.markdown(f'<div class="{cls}">', unsafe_allow_html=True)
+        st.markdown(f'<div class="fmtTitle">{title}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="fmtSub">{sub}</div>', unsafe_allow_html=True)
+
+        btn_label = "Convert & Download" if is_avail else "Not available"
+        clicked = st.button(btn_label, key=f"run_{key}", disabled=not (filename and is_avail), use_container_width=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # One click conversion trigger (run immediately)
+        if clicked and filename and file_bytes:
             st.session_state.outputs = {}
-            st.rerun()
+            try:
+                with st.spinner("Converting…"):
+                    outputs: Dict[str, bytes] = {}
 
-    st.markdown("<hr/>", unsafe_allow_html=True)
+                    # PDF
+                    if key == "pdf_docx":
+                        docx = pdf_to_docx_high_fidelity(file_bytes)
+                        out_name = f"{base}.docx"
+                        outputs[out_name] = docx
+
+                    elif key == "pdf_tables":
+                        tables = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
+                        if not tables:
+                            raise RuntimeError("No tables detected from PDF text-layer. If this PDF is scanned, we can add OCR-table extraction next.")
+                        root = f"{base}_tables_{now_stamp()}"
+                        bundle = build_tables_bundle(tables, base=root)
+                        # give a single ZIP (best website UX)
+                        zip_bytes = build_zip(bundle)
+                        out_name = f"{root}.zip"
+                        outputs[out_name] = zip_bytes
+
+                    elif key == "pdf_txt":
+                        pages = pdf_hybrid_text_extract(file_bytes, max_pages=max_pages, dpi=ocr_dpi)
+                        txt = "\n\n".join([p.strip() for p in pages if p is not None]).strip()
+                        out_name = f"{base}.txt"
+                        outputs[out_name] = (txt + "\n").encode("utf-8")
+
+                    elif key == "pdf_pngzip":
+                        z, _ = pdf_to_images_zip(file_bytes, max_pages=max_pages, dpi=220)
+                        out_name = f"{base}_pages_{now_stamp()}.zip"
+                        outputs[out_name] = z
+
+                    elif key == "pdf_meta":
+                        out_name = f"{base}_metadata.json"
+                        outputs[out_name] = pdf_metadata_to_json(file_bytes)
+
+                    # IMAGE
+                    elif key == "img_txt":
+                        im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                        txt = ocr_image_to_text(im, lang_ui="eng")
+                        out_name = f"{base}.txt"
+                        outputs[out_name] = (txt + "\n").encode("utf-8")
+
+                    elif key == "img_pdf":
+                        im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                        buf = io.BytesIO()
+                        im.save(buf, format="PDF")
+                        out_name = f"{base}.pdf"
+                        outputs[out_name] = buf.getvalue()
+
+                    # WORD
+                    elif key == "docx_txt":
+                        txt = docx_to_plain_text(file_bytes)
+                        out_name = f"{base}.txt"
+                        outputs[out_name] = (txt + "\n").encode("utf-8")
+
+                    # EXCEL
+                    elif key == "xlsx_pdf":
+                        out_name = f"{base}.pdf"
+                        outputs[out_name] = excel_to_pdf_bytes(file_bytes)
+
+                    else:
+                        raise RuntimeError("This conversion is not implemented yet.")
+
+                st.session_state.outputs = outputs
+                push_history(title, filename)
+
+                # AUTO DOWNLOAD (first file)
+                first_name = list(outputs.keys())[0]
+                first_bytes = outputs[first_name]
+                st.session_state.pending_autodl = {
+                    "name": first_name,
+                    "bytes": first_bytes,
+                    "mime": mime_for(first_name),
+                }
+
+                st.success("Converted. Download should start automatically (if browser allows).")
+
+                # force rerun so download triggers in the download panel
+                st.rerun()
+
+            except Exception as e:
+                st.session_state.outputs = {}
+                st.error(str(e))
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+with col_download:
+    st.markdown('<div class="bar">', unsafe_allow_html=True)
+    st.markdown('<div class="sectionTitle">DOWNLOAD</div>', unsafe_allow_html=True)
+
+    # Trigger pending auto download
+    if st.session_state.pending_autodl:
+        p = st.session_state.pending_autodl
+        # Try to auto-download
+        auto_download_bytes(p["name"], p["bytes"], p["mime"])
+        # Clear the flag so it doesn't repeatedly download
+        st.session_state.pending_autodl = None
 
     if not st.session_state.outputs:
         st.markdown(
             """
-            <div class="empty">
-              <h4>Nothing here yet</h4>
-              <p>Select a conversion on the left and click <b>Convert</b>. Outputs will appear here.</p>
+            <div class="filecard">
+              <div class="fname">No output yet</div>
+              <div class="fmeta">Choose an available conversion and click “Convert & Download”.</div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
     else:
+        st.markdown('<div class="muted">If auto-download was blocked, use the buttons below.</div>', unsafe_allow_html=True)
         for out_name, out_bytes in st.session_state.outputs.items():
             st.download_button(
                 label=f"Download {out_name}",
@@ -671,95 +733,29 @@ with colR:
                 key=f"dl_{out_name}_{now_stamp()}",
             )
 
-        zname = f"{safe_filename(os.path.splitext(filename)[0])}_bundle_{now_stamp()}.zip" if filename else f"bundle_{now_stamp()}.zip"
-        st.download_button(
-            label="Download ALL as ZIP",
-            data=build_zip(st.session_state.outputs),
-            file_name=zname,
-            mime="application/zip",
-            use_container_width=True,
-            key=f"dl_zip_{now_stamp()}",
-        )
+        # Optional: always offer "ZIP all"
+        if len(st.session_state.outputs) > 1:
+            zip_name = f"{base}_bundle_{now_stamp()}.zip"
+            st.download_button(
+                label="Download ALL as ZIP",
+                data=build_zip(st.session_state.outputs),
+                file_name=zip_name,
+                mime="application/zip",
+                use_container_width=True,
+                key=f"dl_zip_{now_stamp()}",
+            )
+
+        if st.button("Clear output", use_container_width=True):
+            st.session_state.outputs = {}
+            st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ============================================================
-# Execute conversion
+# HISTORY (BOTTOM, DOES NOT INTERACT)
 # ============================================================
-if convert_btn and uploaded and task_key and file_bytes and filename:
-    st.session_state.outputs = {}
-    base = safe_filename(os.path.splitext(filename)[0])
-
-    try:
-        outputs: Dict[str, bytes] = {}
-
-        if task_key == "pdf_to_docx":
-            outputs[f"{base}.docx"] = pdf_to_docx_high_fidelity(file_bytes)
-
-        elif task_key == "pdf_tables":
-            tables = extract_tables_pdf_textlayer(file_bytes, max_pages=max_pages)
-            if not tables:
-                raise RuntimeError("No tables found in this PDF (text-layer). If scanned, we can add OCR-table mode next.")
-            root = f"{base}_tables_{now_stamp()}"
-            bundle = build_tables_bundle(tables, base=root)
-            outputs[f"{root}.xlsx"] = bundle[f"{root}.xlsx"]
-            outputs[f"{root}.zip"] = build_zip(bundle)
-
-        elif task_key == "pdf_text_txt":
-            pages = pdf_hybrid_text_extract(file_bytes, max_pages=max_pages, lang=ocr_lang, dpi=ocr_dpi)
-            txt = "\n\n".join([p.strip() for p in pages if p is not None]).strip()
-            outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
-
-        elif task_key == "pdf_pages_png":
-            z, _ = pdf_to_images_zip(file_bytes, max_pages=max_pages, dpi=220)
-            outputs[f"{base}_pages_{now_stamp()}.zip"] = z
-
-        elif task_key == "pdf_meta_json":
-            outputs[f"{base}_metadata.json"] = pdf_metadata_to_json(file_bytes)
-
-        elif task_key == "img_text_txt":
-            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            txt = ocr_image_to_text(im, lang_ui=ocr_lang)
-            outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
-
-        elif task_key == "img_to_pdf":
-            im = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            buf = io.BytesIO()
-            im.save(buf, format="PDF")
-            outputs[f"{base}.pdf"] = buf.getvalue()
-
-        elif task_key == "xlsx_to_pdf":
-            outputs[f"{base}.pdf"] = excel_to_pdf_bytes(file_bytes)
-
-        elif task_key == "xlsx_to_docx":
-            outputs[f"{base}.docx"] = excel_to_word_docx_bytes(file_bytes)
-
-        elif task_key == "docx_to_txt":
-            txt = docx_to_plain_text(file_bytes)
-            outputs[f"{base}.txt"] = (txt + "\n").encode("utf-8")
-
-        elif task_key == "docx_tables_to_xlsx":
-            xlsx = word_to_excel_tables(file_bytes)
-            if xlsx is None:
-                raise RuntimeError("No tables found in this Word document.")
-            outputs[f"{base}_tables.xlsx"] = xlsx
-
-        else:
-            raise RuntimeError("Conversion not implemented.")
-
-        st.session_state.outputs = outputs
-        push_history(task_label=task_label, task_key=task_key, fname=filename)
-        st.success("Done. Downloads are ready.")
-
-    except Exception as e:
-        st.session_state.outputs = {}
-        st.error(str(e))
-
-
-# ============================================================
-# History (bottom, clean, optional)
-# ============================================================
+st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 with st.expander("Recent conversions", expanded=False):
     if not st.session_state.history:
         st.caption("No history yet.")
